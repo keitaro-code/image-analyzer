@@ -1,3 +1,5 @@
+const API_BASE_URL = 'https://image-analyzer-5c3x.onrender.com';
+
 const form = document.getElementById('upload-form');
 const imageInput = document.getElementById('image-input');
 const uploadButton = document.getElementById('upload-button');
@@ -103,7 +105,7 @@ const pollStatus = (taskId) => {
   stopPolling();
   pollingTimer = setInterval(async () => {
     try {
-      const response = await fetch(`http://127.0.0.1:8000/status/${taskId}`);
+      const response = await fetch(`${API_BASE_URL}/status/${taskId}`);
       if (!response.ok) {
         throw new Error(`ステータス取得に失敗しました (${response.status})`);
       }
@@ -136,7 +138,7 @@ form.addEventListener('submit', async (event) => {
   formData.append('image', imageInput.files[0]);
 
   try {
-    const response = await fetch('http://127.0.0.1:8000/analyze', {
+    const response = await fetch(`${API_BASE_URL}/analyze`, {
       method: 'POST',
       body: formData,
     });

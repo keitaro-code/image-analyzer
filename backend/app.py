@@ -27,6 +27,7 @@ allowed_origins = [
     "http://[::1]:8080",
     "http://[::]:8000",
     "http://[::]:8080",
+    "https://image-analyzer-1.onrender.com",
 ]
 
 app.add_middleware(
