@@ -38,6 +38,7 @@
 - アップロードされた画像を再エンコードせずそのまま Base64 化し、マルチモーダル入力として利用
 - 画像内容とファイル名から組み立てた指示を添えて、人間の現地調査に近い観察→比較→結論の順番で OpenRouter の `qwen/qwen2.5-vl-72b-instruct:free` モデルへ送信
 - 初回推論で観察メモと検索クエリ案を生成し、Brave Web Search API でリアルタイム検索。検索クエリやヒットは `notes` に逐次表示し、最終推論にも活用
+- 必要に応じて追加質問を生成し、ユーザー回答を受け取って推論を続行
 - モデルには「手がかり→候補比較→結論」の 3 ステップで思考させ、看板などの文字情報も読み取って JSON (`location`, `confidence`, `reason`) を返すよう指示
 - 進捗はインメモリ辞書 (`tasks`) に `TaskState` として保存し、`GET /status/{task_id}` でポーリング可能
 - 推論中の中間メモやリトライは `notes` としてフロントにストリーム表示
@@ -49,6 +50,7 @@
 | `GET /health` | ヘルスチェック（常に `{status: "ok"}`） |
 | `POST /analyze` | 画像を multipart/form-data で送信。タスク生成後、初期ステータスを返す |
 | `GET /status/{task_id}` | 進行中／完了タスクのステータスと結果を返す（JSON は共通フォーマット） |
+| `POST /answer/{task_id}` | 追加質問への回答を送信し、推論を再開する |
 
 ### 環境変数
 
@@ -68,6 +70,7 @@
 - `script.js` で `API_BASE_URL` を切り替え。公開時は `https://image-analyzer-5c3x.onrender.com`
 - 画像アップロード後に `/analyze` を呼び、返ってきた `task_id` を使って 2 秒ごとに `/status/{task_id}` をポーリング
 - 進捗、AI の中間ノート、最終結果カード（場所候補／正確性／推論の根拠）を UI に反映
+- AI から追加情報の質問が届いた場合は、UI 上の回答フォーム経由で `/answer/{task_id}` に送信可能
 - `styles.css` で Noto Sans 基調のカードデザイン・バッジ・レスポンシブ対応
 
 ---

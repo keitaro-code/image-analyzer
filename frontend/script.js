@@ -10,6 +10,12 @@ const progressBar = progressSection.querySelector('progress');
 const stepText = progressSection.querySelector('.step');
 const notesContainer = document.getElementById('notes');
 const notesPre = notesContainer.querySelector('pre');
+const clarificationSection = document.getElementById('clarification');
+const questionText = clarificationSection?.querySelector('.question-text');
+const questionContext = clarificationSection?.querySelector('.question-context');
+const answerForm = document.getElementById('answer-form');
+const answerInput = document.getElementById('answer-input');
+const answerButton = document.getElementById('answer-submit');
 const resultSection = document.getElementById('result');
 const candidateEl = resultSection.querySelector('.candidate');
 const confidenceEl = resultSection.querySelector('.confidence');
@@ -18,6 +24,7 @@ const retryButton = document.getElementById('retry-button');
 
 let pollingTimer = null;
 const defaultFileLabel = '画像を選択';
+let currentTaskId = null;
 
 const resetUI = () => {
   statusEl.textContent = '';
@@ -26,6 +33,13 @@ const resetUI = () => {
   stepText.textContent = '';
   notesContainer.hidden = true;
   notesPre.textContent = '';
+  if (clarificationSection) {
+    clarificationSection.hidden = true;
+    if (questionText) questionText.textContent = '';
+    if (questionContext) questionContext.textContent = '';
+    if (answerInput) answerInput.value = '';
+    if (answerButton) answerButton.disabled = false;
+  }
   resultSection.classList.add('is-hidden');
   candidateEl.textContent = '';
   candidateEl.className = 'candidate';
@@ -66,6 +80,9 @@ const updateStatusUI = (payload) => {
     status,
     error,
     notes,
+    question,
+    question_context: context,
+    awaiting_answer,
   } = payload;
 
   progressSection.hidden = false;
@@ -78,10 +95,35 @@ const updateStatusUI = (payload) => {
     notesPre.scrollTop = notesPre.scrollHeight;
   }
 
+  if (awaiting_answer && clarificationSection) {
+    clarificationSection.hidden = false;
+    if (questionText) {
+      questionText.textContent = question ?? '追加の情報を教えてください。';
+    }
+    if (questionContext) {
+      questionContext.textContent = context ?? '';
+      questionContext.style.display = context ? 'block' : 'none';
+    }
+    if (answerButton) {
+      answerButton.disabled = false;
+    }
+    uploadButton.disabled = true;
+    statusEl.textContent = '追加情報を入力してください。';
+  } else if (clarificationSection) {
+    clarificationSection.hidden = true;
+    if (questionText) questionText.textContent = '';
+    if (questionContext) questionContext.textContent = '';
+    if (answerInput) answerInput.value = '';
+  }
+
   if (error) {
     statusEl.textContent = `エラー: ${error}`;
   } else {
-    statusEl.textContent = status === 'completed' ? '解析が完了しました' : '解析を実行中です...';
+    if (!awaiting_answer && status !== 'completed') {
+      statusEl.textContent = '解析を実行中です...';
+    } else if (status === 'completed') {
+      statusEl.textContent = '解析が完了しました';
+    }
   }
 
   if (candidate && status === 'completed') {
@@ -133,6 +175,7 @@ form.addEventListener('submit', async (event) => {
   resetUI();
   uploadButton.disabled = true;
   statusEl.textContent = '画像を送信しています...';
+  currentTaskId = null;
 
   const formData = new FormData();
   formData.append('image', imageInput.files[0]);
@@ -151,6 +194,7 @@ form.addEventListener('submit', async (event) => {
     updateStatusUI(payload);
 
     if (payload.task_id) {
+      currentTaskId = payload.task_id;
       pollStatus(payload.task_id);
     }
   } catch (error) {
@@ -159,6 +203,54 @@ form.addEventListener('submit', async (event) => {
     uploadButton.disabled = false;
   }
 });
+
+if (answerForm) {
+  answerForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!currentTaskId) {
+      statusEl.textContent = 'タスクが見つかりません。再度解析を実行してください。';
+      return;
+    }
+
+    const answer = answerInput.value.trim();
+    if (!answer) {
+      statusEl.textContent = '回答内容を入力してください。';
+      return;
+    }
+
+    if (answerButton) {
+      answerButton.disabled = true;
+    }
+    statusEl.textContent = '回答を送信しています...';
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/answer/${currentTaskId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ answer }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`回答送信に失敗しました (${response.status})`);
+      }
+
+      const payload = await response.json();
+      answerInput.value = '';
+      updateStatusUI(payload);
+      if (!pollingTimer) {
+        pollStatus(currentTaskId);
+      }
+    } catch (error) {
+      console.error(error);
+      statusEl.textContent = '回答の送信に失敗しました。もう一度お試しください。';
+      if (answerButton) {
+        answerButton.disabled = false;
+      }
+    }
+  });
+}
 
 retryButton.addEventListener('click', () => {
   stopPolling();

@@ -14,6 +14,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from openai import APIError, AsyncOpenAI
+from pydantic import BaseModel
 
 app = FastAPI(title="Image Analyzer", version="0.1.0")
 
@@ -71,6 +72,13 @@ class TaskState:
     image_bytes: Optional[bytes] = None
     filename: Optional[str] = None
     mime_type: Optional[str] = None
+    question: Optional[str] = None
+    question_context: Optional[str] = None
+    awaiting_answer: bool = False
+    conversation: Optional[List[Dict[str, Any]]] = None
+    planning_snapshot: Optional[Dict[str, Any]] = None
+    search_packages_snapshot: Optional[List[Dict[str, Any]]] = None
+    image_data_uri: Optional[str] = None
 
 
 @dataclass
@@ -110,6 +118,9 @@ def build_payload(task_id: str, state: TaskState) -> Dict[str, Any]:
         "status": state.status,
         "error": state.error,
         "notes": state.notes,
+        "question": state.question,
+        "question_context": state.question_context,
+        "awaiting_answer": state.awaiting_answer,
     }
 
 
@@ -330,6 +341,21 @@ def parse_reasoning_output(content: str) -> Optional[Dict[str, Any]]:
     except json.JSONDecodeError:
         return None
 
+    status = (data.get("status") or data.get("outcome") or "result").lower()
+
+    if status == "clarification":
+        question = data.get("question") or data.get("clarification")
+        if not question:
+            return None
+        context = data.get("context") or data.get("why") or data.get("detail")
+        followups = data.get("follow_up") or data.get("followup_questions")
+        return {
+            "type": "question",
+            "question": question,
+            "context": context,
+            "followups": followups,
+        }
+
     candidate = data.get("location") or data.get("candidate")
     confidence = normalize_confidence(data.get("confidence"))
     reason = data.get("reason") or data.get("analysis")
@@ -338,6 +364,7 @@ def parse_reasoning_output(content: str) -> Optional[Dict[str, Any]]:
         return None
 
     return {
+        "type": "result",
         "candidate": candidate,
         "confidence": confidence,
         "reason": reason,
@@ -468,7 +495,12 @@ async def run_planning_phase(
     raise RuntimeError("観察メモと検索クエリの抽出に失敗しました")
 
 
-async def run_reasoning_loop(task_id: str, prompt: str, image_data_uri: str) -> Dict[str, Any]:
+async def run_reasoning_loop(
+    task_id: str,
+    prompt: str,
+    image_data_uri: str,
+    messages: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     client = ensure_openai_client()
     stop_event = asyncio.Event()
     progress_task = asyncio.create_task(manage_progress(task_id, stop_event))
@@ -478,29 +510,32 @@ async def run_reasoning_loop(task_id: str, prompt: str, image_data_uri: str) -> 
         "1. 観察メモ: 建物の構造、景観、気候、地形、道路標識、看板や文字など、人間が現地で目にする要素を箇条書きで整理。確かな観察と推測的な観察を分けてください。\n"
         "2. 候補比較: 2〜3件の候補地を挙げ、各候補と観察メモの照合結果（合致点・不一致点）を比較。\n"
         "3. 最終結論: 最も妥当な候補を選び、決め手となった手掛かりと確信度をまとめる。\n"
-        "最終的な出力は JSON で {\"location\": str, \"confidence\": float, \"reason\": str} のみ返してください。"
+        "重要な手掛かりが欠けている場合のみ clarification を選び、どんな追加情報が必要か日本語で質問を明確に示してください。\n"
+        "最終的な出力は JSON で {status, location, confidence, reason, question, context} を返してください。"
+        "status は result もしくは clarification のどちらかです。clarification の場合は question と context を含め、location と confidence は null にしてください。"
         "JSON はコードブロック（```）で囲まず、余計なテキストも付けないでください。"
         "location と reason は日本語で、confidence は 0 から 1 の数値にしてください。"
     )
 
-    messages = [
-        {
-            "role": "system",
-            "content": [{"type": "text", "text": system_text}],
-        },
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": image_data_uri,
+    if messages is None:
+        messages = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": system_text}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": image_data_uri,
+                        },
                     },
-                },
-            ],
-        },
-    ]
+                ],
+            },
+        ]
 
     result: Optional[Dict[str, Any]] = None
 
@@ -555,12 +590,25 @@ async def run_reasoning_loop(task_id: str, prompt: str, image_data_uri: str) -> 
 
             parsed = parse_reasoning_output(content_text)
             if parsed:
-                await append_note(
-                    task_id,
-                    f"[試行{attempt}] JSON形式の解答を受信しました。候補: {parsed['candidate']}, 確信度: {parsed['confidence']:.2f}",
-                )
-                result = parsed
-                break
+                assistant_entry = {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": content_text}],
+                }
+                messages.append(assistant_entry)
+
+                if parsed["type"] == "result":
+                    await append_note(
+                        task_id,
+                        f"[試行{attempt}] JSON形式の解答を受信しました。候補: {parsed['candidate']}, 確信度: {parsed['confidence']:.2f}",
+                    )
+                    return parsed, messages
+
+                if parsed["type"] == "question":
+                    await append_note(
+                        task_id,
+                        "[試行{}] 追加情報が必要と判断されました。質問を提示します。".format(attempt),
+                    )
+                    return parsed, messages
 
             snippet = content_text[:500]
             await append_note(task_id, f"[試行{attempt}] 中間考察:\n{snippet}")
@@ -582,10 +630,7 @@ async def run_reasoning_loop(task_id: str, prompt: str, image_data_uri: str) -> 
                 }
             )
 
-        if not result:
-            raise RuntimeError("AI応答から有効な結果を取得できませんでした")
-
-        return result
+        raise RuntimeError("AI応答から有効な結果を取得できませんでした")
     finally:
         stop_event.set()
         progress_task.cancel()
@@ -620,6 +665,34 @@ def summarize_search_hits(hits: List[SearchHit]) -> str:
     return "\n".join(lines)
 
 
+def planning_from_snapshot(snapshot: Dict[str, Any]) -> PlanningOutput:
+    return PlanningOutput(
+        observations_certain=snapshot.get("observations_certain", []) or [],
+        observations_possible=snapshot.get("observations_possible", []) or [],
+        search_queries=[],
+    )
+
+
+def search_packages_from_snapshot(snapshot: List[Dict[str, Any]]) -> List[SearchPackage]:
+    packages: List[SearchPackage] = []
+    for item in snapshot:
+        query = item.get("query") or ""
+        if not query:
+            continue
+        rationale = item.get("rationale")
+        results_data = item.get("results") or []
+        hits = [
+            SearchHit(
+                title=hit.get("title") or "(タイトルなし)",
+                url=hit.get("url") or "",
+                snippet=hit.get("snippet") or "",
+            )
+            for hit in results_data
+        ]
+        packages.append(SearchPackage(query=query, rationale=rationale, results=hits))
+    return packages
+
+
 async def process_task(task_id: str) -> None:
     try:
         await update_task(task_id, step="解析準備中", progress=10, status="queued")
@@ -630,6 +703,13 @@ async def process_task(task_id: str) -> None:
             filename = tasks[task_id].filename if task_id in tasks else None
 
         image_data_uri = build_image_data_uri(image_bytes, mime_type, filename)
+        await update_task(
+            task_id,
+            image_data_uri=image_data_uri,
+            awaiting_answer=False,
+            question=None,
+            question_context=None,
+        )
 
         planning = await run_planning_phase(task_id, image_data_uri, filename)
         obs_note = format_observations_note(planning)
@@ -684,7 +764,47 @@ async def process_task(task_id: str) -> None:
             status="processing",
         )
 
-        result = await run_reasoning_loop(task_id, prompt, image_data_uri)
+        result_data, conversation_messages = await run_reasoning_loop(
+            task_id,
+            prompt,
+            image_data_uri,
+        )
+
+        snapshot = {
+            "observations_certain": planning.observations_certain,
+            "observations_possible": planning.observations_possible,
+        }
+        search_snapshot = [
+            {
+                "query": pkg.query,
+                "rationale": pkg.rationale,
+                "results": [
+                    {"title": hit.title, "url": hit.url, "snippet": hit.snippet}
+                    for hit in pkg.results
+                ],
+            }
+            for pkg in search_packages
+        ]
+
+        if result_data["type"] == "question":
+            await update_task(
+                task_id,
+                step="追加情報を待機中",
+                progress=80,
+                status="awaiting_input",
+                question=result_data.get("question"),
+                question_context=result_data.get("context"),
+                awaiting_answer=True,
+                conversation=conversation_messages,
+                planning_snapshot=snapshot,
+                search_packages_snapshot=search_snapshot,
+                image_data_uri=image_data_uri,
+            )
+            await append_note(
+                task_id,
+                "追加情報が必要です。画面の質問に回答してください。",
+            )
+            return
 
         await append_note(
             task_id,
@@ -696,10 +816,17 @@ async def process_task(task_id: str) -> None:
             step="解析完了",
             progress=100,
             status="completed",
-            candidate=result["candidate"],
-            confidence=result["confidence"],
-            reason=result["reason"],
+            candidate=result_data["candidate"],
+            confidence=result_data["confidence"],
+            reason=result_data["reason"],
             error=None,
+            awaiting_answer=False,
+            question=None,
+            question_context=None,
+            conversation=conversation_messages,
+            planning_snapshot=snapshot,
+            search_packages_snapshot=search_snapshot,
+            image_data_uri=image_data_uri,
         )
     except RuntimeError as exc:
         logger.error("Task %s failed: %s", task_id, exc)
@@ -720,9 +847,84 @@ async def process_task(task_id: str) -> None:
             error="予期せぬエラーが発生しました。再試行してください。",
             step="エラーが発生しました",
             progress=100,
+            awaiting_answer=False,
         )
 
 
+async def continue_with_answer(task_id: str, answer: str) -> None:
+    async with tasks_lock:
+        state = tasks.get(task_id)
+        if not state:
+            raise HTTPException(status_code=404, detail="指定されたタスクが見つかりません")
+        if not state.awaiting_answer or not state.conversation:
+            raise HTTPException(status_code=400, detail="このタスクは追加情報を必要としていません")
+        conversation = state.conversation
+        planning_snapshot = state.planning_snapshot or {}
+        search_snapshot = state.search_packages_snapshot or []
+        image_data_uri = state.image_data_uri
+        filename = state.filename
+
+    if not image_data_uri:
+        raise RuntimeError("画像データが見つからないため推論を再開できません")
+
+    planning = planning_from_snapshot(planning_snapshot)
+    search_packages = search_packages_from_snapshot(search_snapshot)
+    planning.search_queries = []  # not used in final prompt
+
+    followup_note = f"ユーザー回答: {answer.strip()}"
+    await append_note(task_id, followup_note)
+
+    conversation.append(
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"ユーザーからの追加情報: {answer.strip()}",
+                }
+            ],
+        }
+    )
+
+    prompt = build_reasoning_prompt(filename, planning, search_packages)
+    result_data, updated_conversation = await run_reasoning_loop(
+        task_id,
+        prompt,
+        image_data_uri,
+        messages=conversation,
+    )
+
+    if result_data["type"] == "question":
+        await update_task(
+            task_id,
+            step="追加情報を待機中",
+            status="awaiting_input",
+            question=result_data.get("question"),
+            question_context=result_data.get("context"),
+            awaiting_answer=True,
+            conversation=updated_conversation,
+        )
+        await append_note(task_id, "追加の情報がまだ必要です。続けて回答してください。")
+        return
+
+    await append_note(task_id, "推論が完了しました。最終結果をUIに反映します。")
+
+    await update_task(
+        task_id,
+        step="解析完了",
+        progress=100,
+        status="completed",
+        candidate=result_data["candidate"],
+        confidence=result_data["confidence"],
+        reason=result_data["reason"],
+        error=None,
+        awaiting_answer=False,
+        question=None,
+        question_context=None,
+        conversation=updated_conversation,
+        planning_snapshot=planning_snapshot,
+        search_packages_snapshot=search_snapshot,
+    )
 @app.get("/health")
 async def health() -> Dict[str, str]:
     return {"status": "ok"}
@@ -762,6 +964,42 @@ async def analyze_image(image: UploadFile = File(...)) -> Dict[str, Any]:
         await update_task(task_id, status="failed", error=str(exc), step="初期化に失敗", progress=100)
 
     return build_payload(task_id, state)
+
+
+class AnswerRequest(BaseModel):
+    answer: str
+
+
+@app.post("/answer/{task_id}")
+async def submit_answer(task_id: str, payload: AnswerRequest) -> Dict[str, Any]:
+    answer = payload.answer.strip()
+    if not answer:
+        raise HTTPException(status_code=400, detail="回答内容を入力してください")
+
+    async with tasks_lock:
+        state = tasks.get(task_id)
+        if not state:
+            raise HTTPException(status_code=404, detail="指定されたタスクが見つかりません")
+        awaiting = state.awaiting_answer
+
+    if not awaiting:
+        raise HTTPException(status_code=400, detail="このタスクは追加情報を必要としていません")
+
+    asyncio.create_task(continue_with_answer(task_id, answer))
+
+    await update_task(
+        task_id,
+        step="追加情報を受信しました",
+        status="processing",
+        awaiting_answer=False,
+    )
+    await append_note(task_id, "回答を受け取りました。推論を再開します。")
+
+    async with tasks_lock:
+        state = tasks.get(task_id)
+        if not state:
+            raise HTTPException(status_code=404, detail="指定されたタスクが見つかりません")
+        return build_payload(task_id, state)
 
 
 @app.get("/status/{task_id}")
