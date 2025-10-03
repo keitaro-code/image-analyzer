@@ -2,14 +2,13 @@ import asyncio
 import base64
 import json
 import logging
+import mimetypes
 import os
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from io import BytesIO
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
-from PIL import Image, UnidentifiedImageError
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -43,8 +42,7 @@ logging.basicConfig(level=logging.INFO)
 
 load_dotenv()
 
-MAX_IMAGE_SIZE = 512
-OPENAI_MAX_CALLS = 3
+OPENAI_MAX_CALLS = 6
 MODEL_NAME = "qwen/qwen2.5-vl-72b-instruct:free"
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -52,11 +50,6 @@ OPENROUTER_HEADERS = {
     "HTTP-Referer": "http://localhost",
     "X-Title": "AI Image Analyzer",
 }
-
-try:
-    RESAMPLE_MODE = Image.Resampling.LANCZOS  # Pillow>=9
-except AttributeError:  # pragma: no cover - Pillow<9 fallback
-    RESAMPLE_MODE = Image.LANCZOS
 
 
 @dataclass
@@ -72,6 +65,7 @@ class TaskState:
     error: Optional[str] = None
     image_bytes: Optional[bytes] = None
     filename: Optional[str] = None
+    mime_type: Optional[str] = None
 
 
 tasks: Dict[str, TaskState] = {}
@@ -163,14 +157,16 @@ async def manage_progress(task_id: str, stop_event: asyncio.Event) -> None:
         raise
 
 
-async def pop_image(task_id: str) -> bytes:
+async def pop_image(task_id: str) -> Tuple[bytes, Optional[str]]:
     async with tasks_lock:
         state = tasks.get(task_id)
         if not state or not state.image_bytes:
             raise HTTPException(status_code=404, detail="対象タスクの画像データが見つかりません")
         image_bytes = state.image_bytes
+        mime_type = state.mime_type
         state.image_bytes = None
-        return image_bytes
+        state.mime_type = None
+        return image_bytes, mime_type
 
 
 def ensure_openai_client() -> AsyncOpenAI:
@@ -187,26 +183,29 @@ def ensure_openai_client() -> AsyncOpenAI:
     return _openai_client
 
 
-def prepare_image_for_model(image_bytes: bytes) -> str:
-    try:
-        with Image.open(BytesIO(image_bytes)) as img:
-            rgb_img = img.convert("RGB")
-    except (UnidentifiedImageError, OSError) as exc:
-        raise ValueError("画像の読み込みに失敗しました") from exc
+def determine_mime_type(mime_type: Optional[str], filename: Optional[str]) -> str:
+    if mime_type and mime_type.startswith("image/"):
+        return mime_type
+    if filename:
+        guessed, _ = mimetypes.guess_type(filename)
+        if guessed and guessed.startswith("image/"):
+            return guessed
+    return "image/jpeg"
 
-    rgb_img.thumbnail((MAX_IMAGE_SIZE, MAX_IMAGE_SIZE), RESAMPLE_MODE)
 
-    buffer = BytesIO()
-    rgb_img.save(buffer, format="JPEG", quality=90)
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+def build_image_data_uri(image_bytes: bytes, mime_type: Optional[str], filename: Optional[str]) -> str:
+    media_type = determine_mime_type(mime_type, filename)
+    encoded = base64.b64encode(image_bytes).decode("utf-8")
+    return f"data:{media_type};base64,{encoded}"
 
 
 def build_reasoning_prompt(filename: Optional[str]) -> str:
     lines = [
-        "以下の画像について、撮影場所や特徴的なランドマークを推定してください。",
+        "以下の写真を現地で観察したつもりで、撮影地点を推測してください。",
         f"元のファイル名: {filename or '不明'}",
-        "画像内の文字（縦書き・斜め文字・日本語を含む）も読み取って、推定根拠に活用してください。",
-        "看板・建物・風景などから得られる手がかりを箇条書きで整理したうえで最終候補を決めてください。",
+        "人間が現地調査で使う手がかり（地形、建物の様式、看板や文字、天候、交通手段、文化的特徴など）を総合的に整理してください。",
+        "文字情報は重要な根拠ですが、周囲の風景・構造物・背景の山や海・道路標識など他の要素とも照合して、総合的な判断を行ってください。",
+        "確かな根拠と推測的な根拠を区別しながら、最終的な候補地点を決めてください。",
     ]
     return "\n".join(lines)
 
@@ -278,16 +277,16 @@ def extract_text_from_message(content: Any) -> str:
     return ""
 
 
-async def run_reasoning_loop(task_id: str, prompt: str, image_b64: str) -> Dict[str, Any]:
+async def run_reasoning_loop(task_id: str, prompt: str, image_data_uri: str) -> Dict[str, Any]:
     client = ensure_openai_client()
     stop_event = asyncio.Event()
     progress_task = asyncio.create_task(manage_progress(task_id, stop_event))
     system_text = (
-        "あなたは日本語で思考過程を行う旅行ガイドAIです。画像から読み取れる視覚的な手がかりや写っている文字情報を活用して推論してください。\n"
+        "あなたは現地を案内する旅行ガイドAIです。画像を人間が観察するように解析し、場所特定に役立つ手掛かりを整理してください。\n"
         "以下の3段階で推論してください:\n"
-        "1. 手がかり抽出: 建物・風景・標識・看板・写っている文字（縦書きや斜め文字を含む）から場所特定に役立つ情報を箇条書きで整理。\n"
-        "2. 候補比較: 2〜3件の候補地を挙げ、それぞれ手がかりとの一致度・不足点を比較。\n"
-        "3. 最終結論: 最も確からしい場所を選び、理由と確信度をまとめる。\n"
+        "1. 観察メモ: 建物の構造、景観、気候、地形、道路標識、看板や文字など、人間が現地で目にする要素を箇条書きで整理。確かな観察と推測的な観察を分けてください。\n"
+        "2. 候補比較: 2〜3件の候補地を挙げ、各候補と観察メモの照合結果（合致点・不一致点）を比較。\n"
+        "3. 最終結論: 最も妥当な候補を選び、決め手となった手掛かりと確信度をまとめる。\n"
         "最終的な出力は JSON で {\"location\": str, \"confidence\": float, \"reason\": str} のみ返してください。"
         "JSON はコードブロック（```）で囲まず、余計なテキストも付けないでください。"
         "location と reason は日本語で、confidence は 0 から 1 の数値にしてください。"
@@ -305,7 +304,7 @@ async def run_reasoning_loop(task_id: str, prompt: str, image_b64: str) -> Dict[
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:image/jpeg;base64,{image_b64}",
+                        "url": image_data_uri,
                     },
                 },
             ],
@@ -356,7 +355,7 @@ async def run_reasoning_loop(task_id: str, prompt: str, image_b64: str) -> Dict[
                         "content": [
                             {
                                 "type": "text",
-                                "text": "日本語で指定したJSON形式 (location, confidence, reason) を出力してください。",
+                                "text": "日本語で指定したJSON形式 (location, confidence, reason) をコードブロックなしで出力してください。",
                             }
                         ],
                     }
@@ -384,7 +383,7 @@ async def run_reasoning_loop(task_id: str, prompt: str, image_b64: str) -> Dict[
                         {
                             "type": "text",
                             "text": (
-                                "前回の内容を踏まえ、日本語で {location, confidence, reason} のJSONを返してください。"
+                                "前回の内容を踏まえ、日本語で {location, confidence, reason} のJSONをコードブロックなしで返してください。"
                                 "confidenceは0から1の範囲です。"
                             ),
                         }
@@ -406,24 +405,23 @@ async def run_reasoning_loop(task_id: str, prompt: str, image_b64: str) -> Dict[
 async def process_task(task_id: str) -> None:
     try:
         await update_task(task_id, step="解析準備中", progress=10, status="queued")
-        image_bytes = await pop_image(task_id)
-        await update_task(task_id, step="画像を正規化中", progress=25, status="processing")
-
-        loop = asyncio.get_running_loop()
-        image_b64 = await loop.run_in_executor(None, prepare_image_for_model, image_bytes)
+        image_bytes, mime_type = await pop_image(task_id)
+        await update_task(task_id, step="画像を準備中", progress=25, status="processing")
 
         async with tasks_lock:
             filename = tasks[task_id].filename if task_id in tasks else None
 
+        image_data_uri = build_image_data_uri(image_bytes, mime_type, filename)
+
         prompt = build_reasoning_prompt(filename)
         await update_task(
             task_id,
-            step="Grok推論準備中",
+            step="AI推論準備中",
             progress=45,
-            notes="推論を開始します。画像の視覚情報と文字情報を読み取っています。",
+            notes="推論を開始します。現地で観察するように景観や文字の手掛かりを整理しています。",
         )
 
-        result = await run_reasoning_loop(task_id, prompt, image_b64)
+        result = await run_reasoning_loop(task_id, prompt, image_data_uri)
 
         await append_note(
             task_id,
@@ -489,6 +487,7 @@ async def analyze_image(image: UploadFile = File(...)) -> Dict[str, Any]:
         notes=None,
         image_bytes=file_bytes,
         filename=image.filename,
+        mime_type=image.content_type,
     )
 
     async with tasks_lock:

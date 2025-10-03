@@ -1,12 +1,12 @@
 # AI Image Analyzer
 
-画像から撮影地点を推測するためのデモアプリケーションです。ブラウザで画像をアップロードすると、バックエンドが Pillow で画像を整形 → OpenRouter のマルチモーダルモデル（`qwen/qwen2.5-vl-72b-instruct:free`）に問い合わせ → 進捗ログとともに最終候補を返します。
+画像から撮影地点を推測するためのデモアプリケーションです。ブラウザで画像をアップロードすると、バックエンドが元画像をそのまま Base64 化して OpenRouter のマルチモーダルモデル（`qwen/qwen2.5-vl-72b-instruct:free`）に渡し、人間が現地で観察するような推論プロセスで候補地点を返します。
 
 公開構成は Render を利用し、以下の 2 サービスで動作しています。
 
 | 役割 | Render サービス種別 | 例 | 備考 |
 | ---- | ------------------ | --- | ---- |
-| バックエンド API | Web Service | `https://image-analyzer-5c3x.onrender.com` | FastAPI + Pillow + OpenRouter |
+| バックエンド API | Web Service | `https://image-analyzer-5c3x.onrender.com` | FastAPI + OpenRouter |
 | フロントエンド UI | Static Site | `https://image-analyzer-1.onrender.com` | HTML/CSS/JS のみ。API に `fetch` |
 
 > 🎯 **使い方（公開環境）**: フロントURLをブラウザで開き、画像をアップロードすると UI が進捗を表示し、最終的に候補地点・正確性・根拠をカード形式で返します。
@@ -35,8 +35,8 @@
 ### 機能概要
 
 - `POST /analyze` で画像ファイルを受け取り、UUID ベースのタスクを生成
-- 画像は Pillow (`pillow`) で長辺 512px へリサイズし、JPEG/Base64 へ変換してマルチモーダル入力に使用
-- 画像内容とファイル名から組み立てた指示を添えて、OpenRouter の `qwen/qwen2.5-vl-72b-instruct:free` モデルへ送信
+- アップロードされた画像を再エンコードせずそのまま Base64 化し、マルチモーダル入力として利用
+- 画像内容とファイル名から組み立てた指示を添えて、人間の現地調査に近い観察→比較→結論の順番で OpenRouter の `qwen/qwen2.5-vl-72b-instruct:free` モデルへ送信
 - モデルには「手がかり→候補比較→結論」の 3 ステップで思考させ、看板などの文字情報も読み取って JSON (`location`, `confidence`, `reason`) を返すよう指示
 - 進捗はインメモリ辞書 (`tasks`) に `TaskState` として保存し、`GET /status/{task_id}` でポーリング可能
 - 推論中の中間メモやリトライは `notes` としてフロントにストリーム表示
