@@ -1,6 +1,6 @@
 # AI Image Analyzer
 
-画像から撮影地点を推測するためのデモアプリケーションです。ブラウザで画像をアップロードすると、バックエンドが Pillow で画像を整形 → OpenRouter のマルチモーダルモデル（`x-ai/grok-4-fast:free`）に問い合わせ → 進捗ログとともに最終候補を返します。
+画像から撮影地点を推測するためのデモアプリケーションです。ブラウザで画像をアップロードすると、バックエンドが Pillow で画像を整形 → OpenRouter のマルチモーダルモデル（`qwen/qwen2.5-vl-72b-instruct:free`）に問い合わせ → 進捗ログとともに最終候補を返します。
 
 公開構成は Render を利用し、以下の 2 サービスで動作しています。
 
@@ -36,7 +36,7 @@
 
 - `POST /analyze` で画像ファイルを受け取り、UUID ベースのタスクを生成
 - 画像は Pillow (`pillow`) で長辺 512px へリサイズし、JPEG/Base64 へ変換してマルチモーダル入力に使用
-- 画像内容とファイル名から組み立てた指示を添えて、OpenRouter の `x-ai/grok-4-fast:free` モデルへ送信
+- 画像内容とファイル名から組み立てた指示を添えて、OpenRouter の `qwen/qwen2.5-vl-72b-instruct:free` モデルへ送信
 - モデルには「手がかり→候補比較→結論」の 3 ステップで思考させ、看板などの文字情報も読み取って JSON (`location`, `confidence`, `reason`) を返すよう指示
 - 進捗はインメモリ辞書 (`tasks`) に `TaskState` として保存し、`GET /status/{task_id}` でポーリング可能
 - 推論中の中間メモやリトライは `notes` としてフロントにストリーム表示

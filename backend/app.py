@@ -45,7 +45,7 @@ load_dotenv()
 
 MAX_IMAGE_SIZE = 512
 OPENAI_MAX_CALLS = 3
-MODEL_NAME = "x-ai/grok-4-fast:free"
+MODEL_NAME = "qwen/qwen2.5-vl-72b-instruct:free"
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_HEADERS = {
