@@ -37,6 +37,7 @@
 - `POST /analyze` で画像ファイルを受け取り、UUID ベースのタスクを生成
 - アップロードされた画像を再エンコードせずそのまま Base64 化し、マルチモーダル入力として利用
 - 画像内容とファイル名から組み立てた指示を添えて、人間の現地調査に近い観察→比較→結論の順番で OpenRouter の `qwen/qwen2.5-vl-72b-instruct:free` モデルへ送信
+- 初回推論で観察メモと検索クエリ案を生成し、Brave Web Search API でリアルタイム検索。検索クエリやヒットは `notes` に逐次表示し、最終推論にも活用
 - モデルには「手がかり→候補比較→結論」の 3 ステップで思考させ、看板などの文字情報も読み取って JSON (`location`, `confidence`, `reason`) を返すよう指示
 - 進捗はインメモリ辞書 (`tasks`) に `TaskState` として保存し、`GET /status/{task_id}` でポーリング可能
 - 推論中の中間メモやリトライは `notes` としてフロントにストリーム表示
@@ -52,6 +53,7 @@
 ### 環境変数
 
 - `OPENROUTER_API_KEY`（必須）: OpenRouter の API キー。ローカルでは `.env`（`.env.example` をコピー）に記入し、Render では Environment > Environment Variables で設定します。
+- `BRAVE_API_KEY`（任意だが推奨）: Brave Web Search API のサブスクリプションキー。設定すると RAG による補助検索が有効になります。
 
 ### 注意事項
 

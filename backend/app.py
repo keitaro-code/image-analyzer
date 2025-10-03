@@ -7,8 +7,9 @@ import os
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -50,6 +51,10 @@ OPENROUTER_HEADERS = {
     "HTTP-Referer": "http://localhost",
     "X-Title": "AI Image Analyzer",
 }
+BRAVE_KEY_ENV = "BRAVE_API_KEY"
+BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+BRAVE_TIMEOUT = 12.0
+BRAVE_MAX_RESULTS = 3
 
 
 @dataclass
@@ -66,6 +71,27 @@ class TaskState:
     image_bytes: Optional[bytes] = None
     filename: Optional[str] = None
     mime_type: Optional[str] = None
+
+
+@dataclass
+class SearchHit:
+    title: str
+    url: str
+    snippet: str
+
+
+@dataclass
+class SearchPackage:
+    query: str
+    rationale: Optional[str]
+    results: List[SearchHit]
+
+
+@dataclass
+class PlanningOutput:
+    observations_certain: List[str]
+    observations_possible: List[str]
+    search_queries: List[Dict[str, Optional[str]]]
 
 
 tasks: Dict[str, TaskState] = {}
@@ -199,14 +225,72 @@ def build_image_data_uri(image_bytes: bytes, mime_type: Optional[str], filename:
     return f"data:{media_type};base64,{encoded}"
 
 
-def build_reasoning_prompt(filename: Optional[str]) -> str:
+async def brave_web_search(query: str, *, count: int = BRAVE_MAX_RESULTS) -> List[SearchHit]:
+    api_key = os.getenv(BRAVE_KEY_ENV)
+    if not api_key:
+        raise RuntimeError("Brave APIキーが環境変数に設定されていません")
+
+    headers = {
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+        "X-Subscription-Token": api_key,
+    }
+    params = {"q": query, "count": count}
+
+    async with httpx.AsyncClient(timeout=BRAVE_TIMEOUT) as client:
+        response = await client.get(
+            BRAVE_SEARCH_ENDPOINT,
+            headers=headers,
+            params=params,
+        )
+        response.raise_for_status()
+
+    data = response.json()
+    web_results = data.get("web", {}).get("results", [])
+    hits: List[SearchHit] = []
+    for item in web_results[:count]:
+        title = item.get("title") or "(タイトルなし)"
+        url = item.get("url") or item.get("link") or ""
+        snippet = item.get("description") or item.get("snippet") or ""
+        hits.append(SearchHit(title=title, url=url, snippet=snippet))
+    return hits
+
+
+def build_reasoning_prompt(
+    filename: Optional[str],
+    planning: PlanningOutput,
+    search_packages: List[SearchPackage],
+) -> str:
     lines = [
         "以下の写真を現地で観察したつもりで、撮影地点を推測してください。",
         f"元のファイル名: {filename or '不明'}",
-        "人間が現地調査で使う手がかり（地形、建物の様式、看板や文字、天候、交通手段、文化的特徴など）を総合的に整理してください。",
-        "文字情報は重要な根拠ですが、周囲の風景・構造物・背景の山や海・道路標識など他の要素とも照合して、総合的な判断を行ってください。",
-        "確かな根拠と推測的な根拠を区別しながら、最終的な候補地点を決めてください。",
+        "観察メモとウェブ検索結果を踏まえて、人間のフィールドワークのように根拠を整理してください。",
+        "確実な観察と推測的な観察を区別しながら、最終的な候補地点を決めてください。",
     ]
+
+    if planning.observations_certain:
+        lines.append("確信できる観察:")
+        for item in planning.observations_certain:
+            lines.append(f"- {item}")
+    if planning.observations_possible:
+        lines.append("推測的な観察:")
+        for item in planning.observations_possible:
+            lines.append(f"- {item}")
+
+    if search_packages:
+        lines.append("ウェブ検索から得られた参考情報:")
+        for pack in search_packages:
+            rationale_text = f"（目的: {pack.rationale}）" if pack.rationale else ""
+            lines.append(f"● 検索クエリ: {pack.query}{rationale_text}")
+            for hit in pack.results:
+                snippet = hit.snippet.strip().replace("\n", " ")
+                if len(snippet) > 200:
+                    snippet = snippet[:197] + "..."
+                lines.append(f"  - {hit.title} ({hit.url}): {snippet}")
+
+    lines.append(
+        "これらの情報と画像から得られる追加の手掛かりを統合し、最終的な結論を提示してください。"
+    )
     return "\n".join(lines)
 
 
@@ -260,6 +344,47 @@ def parse_reasoning_output(content: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def parse_planning_output(content: str) -> Optional[PlanningOutput]:
+    candidate_text = strip_code_fence(content)
+    try:
+        data = json.loads(candidate_text)
+    except json.JSONDecodeError:
+        return None
+
+    observations = data.get("observations") or {}
+    certain_raw = observations.get("certain") or observations.get("definite") or observations.get("sure")
+    possible_raw = observations.get("possible") or observations.get("speculative") or observations.get("hypotheses")
+
+    def normalize_list(value: Any) -> List[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        return []
+
+    certain = normalize_list(certain_raw)
+    possible = normalize_list(possible_raw)
+
+    raw_queries = data.get("search_queries") or data.get("queries") or []
+    parsed_queries: List[Dict[str, Optional[str]]] = []
+    if isinstance(raw_queries, list):
+        for item in raw_queries:
+            if isinstance(item, dict):
+                query = (item.get("query") or item.get("text") or "").strip()
+                if not query:
+                    continue
+                rationale = item.get("reason") or item.get("purpose") or item.get("goal")
+                parsed_queries.append({"query": query, "rationale": (rationale or None)})
+            elif isinstance(item, str) and item.strip():
+                parsed_queries.append({"query": item.strip(), "rationale": None})
+
+    return PlanningOutput(
+        observations_certain=certain,
+        observations_possible=possible,
+        search_queries=parsed_queries,
+    )
+
+
 def extract_text_from_message(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -275,6 +400,72 @@ def extract_text_from_message(content: Any) -> str:
                 parts.append(str(text_value))
         return "\n".join(parts).strip()
     return ""
+
+
+async def run_planning_phase(
+    task_id: str,
+    image_data_uri: str,
+    filename: Optional[str],
+) -> PlanningOutput:
+    client = ensure_openai_client()
+    system_text = (
+        "あなたは現地調査を行う旅行ガイドAIです。画像から観察できる確実な点と推測的な点を整理したうえで、"
+        "場所特定に役立つウェブ検索クエリを提案してください。"
+        "必ず JSON 形式で {observations: {certain: [], possible: []}, search_queries: [{query, reason}...]} を返してください。"
+        "JSON はコードブロック（```）で囲まず、余計なテキストも付けないでください。"
+    )
+    user_text = (
+        "画像を詳細に観察し、人間のフィールドノートのように観察メモをまとめてください。"
+        "そのうえで、場所特定のために実行すべきウェブ検索クエリを最大3件提案してください。"
+        "検索が不要と思われる場合は空配列で構いません。"
+    )
+
+    messages = [
+        {"role": "system", "content": [{"type": "text", "text": system_text}]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_text},
+                {"type": "text", "text": f"ファイル名: {filename or '不明'}"},
+                {"type": "image_url", "image_url": {"url": image_data_uri}},
+            ],
+        },
+    ]
+
+    for attempt in range(1, 4):
+        try:
+            response = await client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                temperature=0.2,
+            )
+        except APIError as exc:
+            logger.exception("Planning call failed: %s", exc)
+            if attempt == 3:
+                raise
+            await asyncio.sleep(1.2 * attempt)
+            continue
+
+        message_content = response.choices[0].message.content if response.choices else None
+        content_text = extract_text_from_message(message_content)
+        parsed = parse_planning_output(content_text)
+        if parsed:
+            return parsed
+
+        messages.append({"role": "assistant", "content": [{"type": "text", "text": content_text}]})
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "指定した JSON 形式 {observations: {certain: [], possible: []}, search_queries: [{query, reason}]} のみを返してください。",
+                    }
+                ],
+            }
+        )
+
+    raise RuntimeError("観察メモと検索クエリの抽出に失敗しました")
 
 
 async def run_reasoning_loop(task_id: str, prompt: str, image_data_uri: str) -> Dict[str, Any]:
@@ -402,23 +593,95 @@ async def run_reasoning_loop(task_id: str, prompt: str, image_data_uri: str) -> 
             await progress_task
 
 
+def format_observations_note(planning: PlanningOutput) -> Optional[str]:
+    lines: List[str] = []
+    if planning.observations_certain:
+        lines.append("確かな観察:")
+        lines.extend(f"- {item}" for item in planning.observations_certain)
+    if planning.observations_possible:
+        if lines:
+            lines.append("")
+        lines.append("推測的な観察:")
+        lines.extend(f"- {item}" for item in planning.observations_possible)
+    if not lines:
+        return None
+    return "\n".join(lines)
+
+
+def summarize_search_hits(hits: List[SearchHit]) -> str:
+    if not hits:
+        return "(検索結果なし)"
+    lines = []
+    for idx, hit in enumerate(hits, start=1):
+        snippet = hit.snippet.strip().replace("\n", " ")
+        if len(snippet) > 180:
+            snippet = snippet[:177] + "..."
+        lines.append(f"{idx}. {hit.title} - {snippet}\n   {hit.url}")
+    return "\n".join(lines)
+
+
 async def process_task(task_id: str) -> None:
     try:
         await update_task(task_id, step="解析準備中", progress=10, status="queued")
         image_bytes, mime_type = await pop_image(task_id)
-        await update_task(task_id, step="画像を準備中", progress=25, status="processing")
+        await update_task(task_id, step="分析プランを作成中", progress=25, status="processing")
 
         async with tasks_lock:
             filename = tasks[task_id].filename if task_id in tasks else None
 
         image_data_uri = build_image_data_uri(image_bytes, mime_type, filename)
 
-        prompt = build_reasoning_prompt(filename)
+        planning = await run_planning_phase(task_id, image_data_uri, filename)
+        obs_note = format_observations_note(planning)
+        if obs_note:
+            await append_note(task_id, f"[観察メモ]\n{obs_note}")
+
+        await update_task(task_id, step="ウェブ検索を実行中", progress=45)
+
+        search_packages: List[SearchPackage] = []
+        brave_error: Optional[str] = None
+        for query_info in planning.search_queries:
+            query_text = query_info.get("query") or ""
+            if not query_text:
+                continue
+            rationale = query_info.get("rationale")
+            await append_note(
+                task_id,
+                f"[検索] \"{query_text}\" を実行します。"
+                + (f" 目的: {rationale}" if rationale else ""),
+            )
+            if brave_error:
+                await append_note(task_id, f"[検索] スキップ: {brave_error}")
+                continue
+            try:
+                hits = await brave_web_search(query_text)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Brave search failed for task %s: %s", task_id, exc)
+                brave_error = str(exc)
+                await append_note(task_id, f"[検索] エラー: {brave_error}")
+                continue
+
+            await append_note(
+                task_id,
+                f"[検索結果] \"{query_text}\"\n{summarize_search_hits(hits)}",
+            )
+            search_packages.append(
+                SearchPackage(query=query_text, rationale=rationale, results=hits)
+            )
+
         await update_task(
             task_id,
-            step="AI推論準備中",
-            progress=45,
-            notes="推論を開始します。現地で観察するように景観や文字の手掛かりを整理しています。",
+            step="最終推論準備中",
+            progress=60,
+            notes="観察メモと検索結果をまとめ、最終推論に進みます。",
+        )
+
+        prompt = build_reasoning_prompt(filename, planning, search_packages)
+        await update_task(
+            task_id,
+            step="AI推論中",
+            progress=70,
+            status="processing",
         )
 
         result = await run_reasoning_loop(task_id, prompt, image_data_uri)
