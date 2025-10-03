@@ -19,6 +19,14 @@
 
     <div id="status" aria-live="polite"></div>
 
+    <section id="image-preview" class="image-preview is-hidden">
+      <h3>アップロードした画像</h3>
+      <figure>
+        <img alt="アップロードした画像のプレビュー" />
+        <figcaption class="image-filename"></figcaption>
+      </figure>
+    </section>
+
     <section id="progress" hidden>
       <p class="step"></p>
       <progress value="0" max="100"></progress>
@@ -51,9 +59,17 @@
         <span class="result-label">場所候補</span>
         <p class="candidate"></p>
       </div>
-      <div class="reason-card">
+      <div class="reason-card confidence-card">
         <span class="result-label">正確性</span>
-        <p class="confidence"></p>
+        <div class="confidence-meter">
+          <div class="confidence-bar">
+            <div class="confidence-fill"></div>
+          </div>
+          <div class="confidence-summary">
+            <span class="confidence-percent"></span>
+            <span class="confidence-label"></span>
+          </div>
+        </div>
       </div>
       <div class="reason-card">
         <span class="result-label">推論の根拠</span>

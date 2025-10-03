@@ -10,6 +10,9 @@ const progressBar = progressSection.querySelector('progress');
 const stepText = progressSection.querySelector('.step');
 const notesContainer = document.getElementById('notes');
 const notesPre = notesContainer.querySelector('pre');
+const imagePreviewSection = document.getElementById('image-preview');
+const imagePreviewImg = imagePreviewSection?.querySelector('img');
+const imagePreviewCaption = imagePreviewSection?.querySelector('.image-filename');
 const clarificationSection = document.getElementById('clarification');
 const questionText = clarificationSection?.querySelector('.question-text');
 const questionContext = clarificationSection?.querySelector('.question-context');
@@ -19,21 +22,54 @@ const answerInput = document.getElementById('answer-input');
 const answerButton = document.getElementById('answer-submit');
 const resultSection = document.getElementById('result');
 const candidateEl = resultSection.querySelector('.candidate');
-const confidenceEl = resultSection.querySelector('.confidence');
+const confidenceFillEl = resultSection.querySelector('.confidence-fill');
+const confidencePercentEl = resultSection.querySelector('.confidence-percent');
+const confidenceLabelEl = resultSection.querySelector('.confidence-label');
 const reasonEl = resultSection.querySelector('.reason');
 const retryButton = document.getElementById('retry-button');
 
 let pollingTimer = null;
 const defaultFileLabel = '画像を選択';
 let currentTaskId = null;
+let currentPreviewUrl = null;
 
-const resetUI = () => {
+const showImagePreview = (file) => {
+  if (!file || !imagePreviewSection || !imagePreviewImg || !imagePreviewCaption) {
+    return;
+  }
+  if (currentPreviewUrl) {
+    URL.revokeObjectURL(currentPreviewUrl);
+  }
+  currentPreviewUrl = URL.createObjectURL(file);
+  imagePreviewImg.src = currentPreviewUrl;
+  imagePreviewImg.alt = `${file.name} のプレビュー`;
+  imagePreviewCaption.textContent = file.name;
+  imagePreviewSection.classList.remove('is-hidden');
+};
+
+const resetUI = (options = {}) => {
+  const { preservePreview = false, preserveFilename = false } = options;
   statusEl.textContent = '';
   progressSection.hidden = true;
   progressBar.value = 0;
   stepText.textContent = '';
   notesContainer.hidden = true;
   notesPre.textContent = '';
+  if (confidenceFillEl) {
+    confidenceFillEl.style.width = '0%';
+    confidenceFillEl.classList.remove('level-low', 'level-mid', 'level-high');
+  }
+  if (confidencePercentEl) confidencePercentEl.textContent = '--%';
+  if (confidenceLabelEl) confidenceLabelEl.textContent = '---';
+  if (!preservePreview && imagePreviewSection) {
+    imagePreviewSection.classList.add('is-hidden');
+    if (imagePreviewImg) imagePreviewImg.src = '';
+    if (imagePreviewCaption) imagePreviewCaption.textContent = '';
+    if (currentPreviewUrl) {
+      URL.revokeObjectURL(currentPreviewUrl);
+      currentPreviewUrl = null;
+    }
+  }
   if (clarificationSection) {
     clarificationSection.hidden = true;
     clarificationSection.style.display = 'none';
@@ -57,21 +93,33 @@ const resetUI = () => {
   confidenceEl.textContent = '';
   confidenceEl.className = 'confidence';
   reasonEl.textContent = '';
-  fileLabelText.textContent = defaultFileLabel;
+  if (!preserveFilename) {
+    fileLabelText.textContent = defaultFileLabel;
+  }
 };
 
 const formatConfidence = (value) => {
   if (typeof value !== 'number' || Number.isNaN(value)) {
-    return { text: '---', level: 'low' };
+    return { percent: null, level: 'low', label: '---' };
   }
-  const percent = Math.round(value * 100);
+  const normalized = Math.min(Math.max(value, 0), 1);
+  const adjusted = 0.4 + normalized * 0.45; // 40%〜85% の範囲で表示
+  const percent = Math.round(adjusted * 100);
+
   let level = 'low';
-  if (percent >= 80) {
+  let label = '参考程度';
+  if (percent >= 75) {
     level = 'high';
+    label = 'かなり確信あり';
+  } else if (percent >= 60) {
+    level = 'mid';
+    label = 'まずまず';
   } else if (percent >= 50) {
     level = 'mid';
+    label = '判断保留';
   }
-  return { text: `${percent}%`, level };
+
+  return { percent, level, label };
 };
 
 const stopPolling = () => {
@@ -221,9 +269,18 @@ const updateStatusUI = (payload) => {
     candidateEl.textContent = candidate;
     candidateEl.className = 'candidate highlight-text';
     const conf = formatConfidence(confidence);
-    confidenceEl.textContent = '';
-    confidenceEl.className = `confidence confidence-pill ${conf.level}`;
-    confidenceEl.textContent = conf.text;
+    if (confidenceFillEl) {
+      confidenceFillEl.style.width = conf.percent !== null ? `${conf.percent}%` : '0%';
+      confidenceFillEl.classList.remove('level-low', 'level-mid', 'level-high');
+      const fillLevelClass = conf.level === 'high' ? 'level-high' : conf.level === 'mid' ? 'level-mid' : 'level-low';
+      confidenceFillEl.classList.add(fillLevelClass);
+    }
+    if (confidencePercentEl) {
+      confidencePercentEl.textContent = conf.percent !== null ? `${conf.percent}%` : '--%';
+    }
+    if (confidenceLabelEl) {
+      confidenceLabelEl.textContent = conf.label;
+    }
     reasonEl.textContent = reason ?? '---';
   }
 
@@ -262,7 +319,7 @@ form.addEventListener('submit', async (event) => {
     return;
   }
 
-  resetUI();
+  resetUI({ preservePreview: true, preserveFilename: true });
   uploadButton.disabled = true;
   statusEl.textContent = '画像を送信しています...';
   currentTaskId = null;
@@ -391,7 +448,9 @@ retryButton.addEventListener('click', () => {
 imageInput.addEventListener('change', () => {
   if (imageInput.files && imageInput.files.length > 0) {
     fileLabelText.textContent = imageInput.files[0].name;
+    showImagePreview(imageInput.files[0]);
   } else {
     fileLabelText.textContent = defaultFileLabel;
+    resetUI();
   }
 });

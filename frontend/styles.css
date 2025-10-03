@@ -80,6 +80,40 @@ button:hover:not(:disabled) {
   padding: 1rem;
 }
 
+.image-preview {
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  background: #f9fbff;
+  border: 1px solid #e0e7ff;
+  border-radius: 10px;
+}
+
+.image-preview h3 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  color: #2a3c7f;
+}
+
+.image-preview figure {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.image-preview img {
+  max-width: 100%;
+  border-radius: 8px;
+  border: 1px solid rgba(42, 60, 127, 0.2);
+  object-fit: contain;
+}
+
+.image-preview .image-filename {
+  font-size: 0.85rem;
+  color: #55608a;
+  word-break: break-all;
+}
+
 progress {
   width: 100%;
   height: 1rem;
@@ -248,28 +282,63 @@ progress {
   color: #30407a;
 }
 
-.confidence-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 0.4rem;
-  padding: 0.35rem 0.75rem;
+.confidence-card {
+  gap: 1rem;
+}
+
+.confidence-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.confidence-bar {
+  position: relative;
+  width: 100%;
+  height: 0.6rem;
   border-radius: 999px;
-  font-size: 0.95rem;
-  font-weight: 600;
-  background: rgba(26, 115, 232, 0.12);
-  color: #1a73e8;
-  width: fit-content;
+  background: linear-gradient(90deg, #e3ecff 0%, #d1dcff 100%);
+  overflow: hidden;
 }
 
-.confidence-pill.low {
-  background: rgba(253, 181, 62, 0.18);
-  color: #c07600;
+.confidence-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #4a72ff 0%, #2a52d5 100%);
+  transition: width 0.4s ease;
 }
 
-.confidence-pill.mid {
-  background: rgba(66, 170, 255, 0.16);
-  color: #1b6fb5;
+.confidence-fill.level-low {
+  background: linear-gradient(90deg, #ffb347 0%, #ff8a47 100%);
+}
+
+.confidence-fill.level-mid {
+  background: linear-gradient(90deg, #65b4ff 0%, #3a8bff 100%);
+}
+
+.confidence-fill.level-high {
+  background: linear-gradient(90deg, #4adc8d 0%, #2da85f 100%);
+}
+
+.confidence-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  color: #2a3c7f;
+}
+
+.confidence-summary .confidence-percent {
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+.confidence-summary .confidence-label {
+  font-size: 0.9rem;
+  color: #55608a;
 }
 
 @media (max-width: 480px) {
