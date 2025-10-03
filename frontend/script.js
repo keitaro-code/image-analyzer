@@ -55,12 +55,6 @@ const resetUI = (options = {}) => {
   stepText.textContent = '';
   notesContainer.hidden = true;
   notesPre.textContent = '';
-  if (confidenceFillEl) {
-    confidenceFillEl.style.width = '0%';
-    confidenceFillEl.classList.remove('level-low', 'level-mid', 'level-high');
-  }
-  if (confidencePercentEl) confidencePercentEl.textContent = '--%';
-  if (confidenceLabelEl) confidenceLabelEl.textContent = '---';
   if (!preservePreview && imagePreviewSection) {
     imagePreviewSection.classList.add('is-hidden');
     if (imagePreviewImg) imagePreviewImg.src = '';
@@ -90,8 +84,12 @@ const resetUI = (options = {}) => {
   resultSection.classList.add('is-hidden');
   candidateEl.textContent = '';
   candidateEl.className = 'candidate';
-  confidenceEl.textContent = '';
-  confidenceEl.className = 'confidence';
+  if (confidenceFillEl) {
+    confidenceFillEl.style.width = '0%';
+    confidenceFillEl.classList.remove('level-low', 'level-mid', 'level-high');
+  }
+  if (confidencePercentEl) confidencePercentEl.textContent = '--%';
+  if (confidenceLabelEl) confidenceLabelEl.textContent = '---';
   reasonEl.textContent = '';
   if (!preserveFilename) {
     fileLabelText.textContent = defaultFileLabel;
