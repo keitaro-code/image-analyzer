@@ -221,9 +221,29 @@ def normalize_confidence(value: Any) -> Optional[float]:
     return max(0.0, min(1.0, num))
 
 
+def strip_code_fence(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines:
+            first = lines[0].strip()
+            if first.startswith("```"):
+                lines = lines[1:]
+        while lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    return stripped
+
+
 def parse_reasoning_output(content: str) -> Optional[Dict[str, Any]]:
+    candidate_text = strip_code_fence(content)
+    if "{" in candidate_text and "}" in candidate_text:
+        start = candidate_text.find("{")
+        end = candidate_text.rfind("}")
+        candidate_text = candidate_text[start : end + 1]
+
     try:
-        data = json.loads(content)
+        data = json.loads(candidate_text)
     except json.JSONDecodeError:
         return None
 
@@ -269,6 +289,7 @@ async def run_reasoning_loop(task_id: str, prompt: str, image_b64: str) -> Dict[
         "2. 候補比較: 2〜3件の候補地を挙げ、それぞれ手がかりとの一致度・不足点を比較。\n"
         "3. 最終結論: 最も確からしい場所を選び、理由と確信度をまとめる。\n"
         "最終的な出力は JSON で {\"location\": str, \"confidence\": float, \"reason\": str} のみ返してください。"
+        "JSON はコードブロック（```）で囲まず、余計なテキストも付けないでください。"
         "location と reason は日本語で、confidence は 0 から 1 の数値にしてください。"
     )
 
