@@ -108,14 +108,46 @@ const updateStatusUI = (payload) => {
 
   if (clarificationSection) {
     const previousQuestion = clarificationSection.dataset.question || '';
+    const storedAnswer = clarificationSection.dataset.answer || '';
     const hasSubmitted = clarificationSection.dataset.state === 'submitted';
     const stillProcessing = status !== 'completed' && status !== 'failed';
+
+    const showSubmittedPreview = (answerText) => {
+      clarificationSection.hidden = false;
+      clarificationSection.style.display = 'flex';
+      if (questionText) questionText.textContent = '提出いただいた情報';
+      if (questionContext) {
+        questionContext.textContent = '';
+        questionContext.style.display = 'none';
+      }
+      if (answerInput) {
+        answerInput.readOnly = true;
+        answerInput.style.display = 'none';
+      }
+      if (answerButton) {
+        answerButton.disabled = true;
+        answerButton.style.display = 'none';
+      }
+      if (answerPreview) {
+        answerPreview.textContent = answerText;
+        answerPreview.style.display = 'block';
+      }
+      uploadButton.disabled = true;
+    };
 
     if (awaiting_answer) {
       clarificationSection.hidden = false;
       clarificationSection.style.display = 'flex';
       const newQuestion = question ?? '追加の情報を教えてください。';
-      const mustResetInput = hasSubmitted || previousQuestion !== newQuestion;
+      const sameQuestionAsBefore = previousQuestion === newQuestion;
+
+      if (hasSubmitted && sameQuestionAsBefore && storedAnswer) {
+        // 送信済みだがモデルからまだ応答が返っていない。プレビューのまま維持。
+        showSubmittedPreview(storedAnswer);
+        return;
+      }
+
+      const mustResetInput = !sameQuestionAsBefore;
       if (questionText) questionText.textContent = newQuestion;
       if (questionContext) {
         questionContext.textContent = context ?? '';
@@ -138,32 +170,14 @@ const updateStatusUI = (payload) => {
       }
       clarificationSection.dataset.question = newQuestion;
       clarificationSection.dataset.context = context ?? '';
-      delete clarificationSection.dataset.answer;
+      if (!sameQuestionAsBefore) {
+        delete clarificationSection.dataset.answer;
+      }
       clarificationSection.dataset.state = 'awaiting';
       uploadButton.disabled = true;
       statusEl.textContent = '追加情報を入力してください。';
     } else if (hasSubmitted && stillProcessing) {
-      clarificationSection.hidden = false;
-      clarificationSection.style.display = 'flex';
-      if (questionText) questionText.textContent = '提出いただいた情報';
-      if (questionContext) {
-        questionContext.textContent = '';
-        questionContext.style.display = 'none';
-      }
-      if (answerInput) {
-        answerInput.readOnly = true;
-        answerInput.style.display = 'none';
-      }
-      if (answerButton) {
-        answerButton.disabled = true;
-        answerButton.style.display = 'none';
-      }
-      if (answerPreview) {
-        const stored = clarificationSection.dataset.answer || '';
-        answerPreview.textContent = stored;
-        answerPreview.style.display = 'block';
-      }
-      uploadButton.disabled = true;
+      showSubmittedPreview(storedAnswer);
     } else {
       clarificationSection.hidden = true;
       clarificationSection.style.display = 'none';
