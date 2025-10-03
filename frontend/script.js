@@ -35,6 +35,7 @@ const resetUI = () => {
   notesPre.textContent = '';
   if (clarificationSection) {
     clarificationSection.hidden = true;
+    clarificationSection.style.display = 'none';
     if (questionText) questionText.textContent = '';
     if (questionContext) questionContext.textContent = '';
     if (answerInput) answerInput.value = '';
@@ -97,6 +98,7 @@ const updateStatusUI = (payload) => {
 
   if (awaiting_answer && clarificationSection) {
     clarificationSection.hidden = false;
+    clarificationSection.style.display = 'flex';
     if (questionText) {
       questionText.textContent = question ?? '追加の情報を教えてください。';
     }
@@ -111,8 +113,12 @@ const updateStatusUI = (payload) => {
     statusEl.textContent = '追加情報を入力してください。';
   } else if (clarificationSection) {
     clarificationSection.hidden = true;
+    clarificationSection.style.display = 'none';
     if (questionText) questionText.textContent = '';
-    if (questionContext) questionContext.textContent = '';
+    if (questionContext) {
+      questionContext.textContent = '';
+      questionContext.style.display = 'none';
+    }
     if (answerInput) answerInput.value = '';
   }
 

@@ -895,6 +895,7 @@ async def continue_with_answer(task_id: str, answer: str) -> None:
     )
 
     if result_data["type"] == "question":
+        await append_note(task_id, "追加の情報がまだ必要です。続けて回答してください。")
         await update_task(
             task_id,
             step="追加情報を待機中",
@@ -904,7 +905,6 @@ async def continue_with_answer(task_id: str, answer: str) -> None:
             awaiting_answer=True,
             conversation=updated_conversation,
         )
-        await append_note(task_id, "追加の情報がまだ必要です。続けて回答してください。")
         return
 
     await append_note(task_id, "推論が完了しました。最終結果をUIに反映します。")
@@ -985,15 +985,7 @@ async def submit_answer(task_id: str, payload: AnswerRequest) -> Dict[str, Any]:
     if not awaiting:
         raise HTTPException(status_code=400, detail="このタスクは追加情報を必要としていません")
 
-    asyncio.create_task(continue_with_answer(task_id, answer))
-
-    await update_task(
-        task_id,
-        step="追加情報を受信しました",
-        status="processing",
-        awaiting_answer=False,
-    )
-    await append_note(task_id, "回答を受け取りました。推論を再開します。")
+    await continue_with_answer(task_id, answer)
 
     async with tasks_lock:
         state = tasks.get(task_id)
