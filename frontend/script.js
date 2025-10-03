@@ -39,7 +39,9 @@ const resetUI = () => {
     if (questionText) questionText.textContent = '';
     if (questionContext) questionContext.textContent = '';
     if (answerInput) answerInput.value = '';
+    if (answerInput) answerInput.readOnly = false;
     if (answerButton) answerButton.disabled = false;
+    delete clarificationSection.dataset.state;
   }
   resultSection.classList.add('is-hidden');
   candidateEl.textContent = '';
@@ -109,17 +111,40 @@ const updateStatusUI = (payload) => {
     if (answerButton) {
       answerButton.disabled = false;
     }
+    if (answerInput) {
+      answerInput.readOnly = false;
+      if (!clarificationSection.dataset.state || clarificationSection.dataset.state !== 'awaiting') {
+        answerInput.value = '';
+      }
+    }
+    clarificationSection.dataset.state = 'awaiting';
     uploadButton.disabled = true;
     statusEl.textContent = '追加情報を入力してください。';
   } else if (clarificationSection) {
-    clarificationSection.hidden = true;
-    clarificationSection.style.display = 'none';
-    if (questionText) questionText.textContent = '';
-    if (questionContext) {
-      questionContext.textContent = '';
-      questionContext.style.display = 'none';
+    const isSubmitted = clarificationSection.dataset.state === 'submitted';
+    const shouldKeepVisible = isSubmitted && status !== 'completed' && status !== 'failed';
+
+    if (shouldKeepVisible) {
+      clarificationSection.hidden = false;
+      clarificationSection.style.display = 'flex';
+      if (answerInput) answerInput.readOnly = true;
+      if (answerButton) answerButton.disabled = true;
+      uploadButton.disabled = true;
+    } else {
+      clarificationSection.hidden = true;
+      clarificationSection.style.display = 'none';
+      if (questionText) questionText.textContent = '';
+      if (questionContext) {
+        questionContext.textContent = '';
+        questionContext.style.display = 'none';
+      }
+      if (answerInput) {
+        answerInput.value = '';
+        answerInput.readOnly = false;
+      }
+      if (answerButton) answerButton.disabled = false;
+      delete clarificationSection.dataset.state;
     }
-    if (answerInput) answerInput.value = '';
   }
 
   if (error) {
@@ -227,6 +252,12 @@ if (answerForm) {
     if (answerButton) {
       answerButton.disabled = true;
     }
+    if (answerInput) {
+      answerInput.readOnly = true;
+    }
+    if (clarificationSection) {
+      clarificationSection.dataset.state = 'submitted';
+    }
     statusEl.textContent = '回答を送信しています...';
 
     try {
@@ -243,7 +274,6 @@ if (answerForm) {
       }
 
       const payload = await response.json();
-      answerInput.value = '';
       updateStatusUI(payload);
       if (!pollingTimer) {
         pollStatus(currentTaskId);
@@ -253,6 +283,12 @@ if (answerForm) {
       statusEl.textContent = '回答の送信に失敗しました。もう一度お試しください。';
       if (answerButton) {
         answerButton.disabled = false;
+      }
+      if (answerInput) {
+        answerInput.readOnly = false;
+      }
+      if (clarificationSection) {
+        clarificationSection.dataset.state = 'awaiting';
       }
     }
   });
