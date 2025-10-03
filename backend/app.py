@@ -6,10 +6,10 @@ import os
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Any, Dict, Optional
 
-import cv2
-import numpy as np
+from PIL import Image, UnidentifiedImageError
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -52,6 +52,11 @@ OPENROUTER_HEADERS = {
     "HTTP-Referer": "http://localhost",
     "X-Title": "AI Image Analyzer",
 }
+
+try:
+    RESAMPLE_MODE = Image.Resampling.LANCZOS  # Pillow>=9
+except AttributeError:  # pragma: no cover - Pillow<9 fallback
+    RESAMPLE_MODE = Image.LANCZOS
 
 
 @dataclass
@@ -182,70 +187,28 @@ def ensure_openai_client() -> AsyncOpenAI:
     return _openai_client
 
 
-def resize_image(image_bytes: bytes) -> np.ndarray:
-    array = np.frombuffer(image_bytes, dtype=np.uint8)
-    image = cv2.imdecode(array, cv2.IMREAD_COLOR)
-    if image is None:
-        raise ValueError("画像のデコードに失敗しました")
+def prepare_image_for_model(image_bytes: bytes) -> str:
+    try:
+        with Image.open(BytesIO(image_bytes)) as img:
+            rgb_img = img.convert("RGB")
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValueError("画像の読み込みに失敗しました") from exc
 
-    height, width = image.shape[:2]
-    longest = max(height, width)
-    if longest == 0:
-        raise ValueError("画像サイズが不正です")
+    rgb_img.thumbnail((MAX_IMAGE_SIZE, MAX_IMAGE_SIZE), RESAMPLE_MODE)
 
-    scale = min(1.0, MAX_IMAGE_SIZE / float(longest))
-    if scale != 1.0:
-        new_size = (int(width * scale), int(height * scale))
-        image = cv2.resize(image, new_size, interpolation=cv2.INTER_AREA)
-    return image
+    buffer = BytesIO()
+    rgb_img.save(buffer, format="JPEG", quality=90)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def extract_features(image: np.ndarray) -> Dict[str, Any]:
-    height, width = image.shape[:2]
-
-    mean_bgr = cv2.mean(image)[:3]
-    mean_rgb = mean_bgr[::-1]
-
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, threshold1=100, threshold2=200)
-    edge_density = float(np.count_nonzero(edges)) / float(height * width)
-
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    hue_hist = cv2.calcHist([hsv], [0], None, [6], [0, 180])
-    hue_hist = hue_hist / hue_hist.sum() if hue_hist.sum() else hue_hist
-    dominant_segment = int(np.argmax(hue_hist))
-
-    description = (
-        f"平均RGB({mean_rgb[0]:.1f}, {mean_rgb[1]:.1f}, {mean_rgb[2]:.1f}), "
-        f"エッジ密度 {edge_density:.3f}, 色相セグメント {dominant_segment}"
-    )
-
-    return {
-        "width": width,
-        "height": height,
-        "mean_rgb": [float(v) for v in mean_rgb],
-        "edge_density": edge_density,
-        "dominant_hue_segment": dominant_segment,
-        "description": description,
-    }
-
-
-def build_reasoning_prompt(features: Dict[str, Any], filename: Optional[str]) -> str:
+def build_reasoning_prompt(filename: Optional[str]) -> str:
     lines = [
-        "以下はWebブラウザからアップロードされた画像の解析情報です。",
+        "以下の画像について、撮影場所や特徴的なランドマークを推定してください。",
         f"元のファイル名: {filename or '不明'}",
-        f"リサイズ後の解像度: {features['width']}x{features['height']}",
-        f"特徴サマリ: {features['description']}",
-        "この特徴をもとに、画像がどの地域の風景かを推論してください。",
+        "画像内の文字（縦書き・斜め文字・日本語を含む）も読み取って、推定根拠に活用してください。",
+        "看板・建物・風景などから得られる手がかりを箇条書きで整理したうえで最終候補を決めてください。",
     ]
     return "\n".join(lines)
-
-
-def encode_image_to_base64(image: np.ndarray) -> str:
-    success, buffer = cv2.imencode(".jpg", image)
-    if not success:
-        raise ValueError("画像のエンコードに失敗しました")
-    return base64.b64encode(buffer.tobytes()).decode("utf-8")
 
 
 def normalize_confidence(value: Any) -> Optional[float]:
@@ -300,8 +263,9 @@ async def run_reasoning_loop(task_id: str, prompt: str, image_b64: str) -> Dict[
     stop_event = asyncio.Event()
     progress_task = asyncio.create_task(manage_progress(task_id, stop_event))
     system_text = (
-        "あなたは日本語で思考過程を行う旅行ガイドAIです。以下の3段階で推論してください:\n"
-        "1. 手がかり抽出: 提供された特徴や背景から場所特定に使える手がかりを箇条書きで整理。\n"
+        "あなたは日本語で思考過程を行う旅行ガイドAIです。画像から読み取れる視覚的な手がかりや写っている文字情報を活用して推論してください。\n"
+        "以下の3段階で推論してください:\n"
+        "1. 手がかり抽出: 建物・風景・標識・看板・写っている文字（縦書きや斜め文字を含む）から場所特定に役立つ情報を箇条書きで整理。\n"
         "2. 候補比較: 2〜3件の候補地を挙げ、それぞれ手がかりとの一致度・不足点を比較。\n"
         "3. 最終結論: 最も確からしい場所を選び、理由と確信度をまとめる。\n"
         "最終的な出力は JSON で {\"location\": str, \"confidence\": float, \"reason\": str} のみ返してください。"
@@ -422,24 +386,20 @@ async def process_task(task_id: str) -> None:
     try:
         await update_task(task_id, step="解析準備中", progress=10, status="queued")
         image_bytes = await pop_image(task_id)
-        await update_task(task_id, step="画像をリサイズ中", progress=20, status="processing")
+        await update_task(task_id, step="画像を正規化中", progress=25, status="processing")
 
         loop = asyncio.get_running_loop()
-        image = await loop.run_in_executor(None, resize_image, image_bytes)
-        image_b64 = await loop.run_in_executor(None, encode_image_to_base64, image)
-
-        await update_task(task_id, step="特徴量を抽出中", progress=35)
-        features = await loop.run_in_executor(None, extract_features, image)
+        image_b64 = await loop.run_in_executor(None, prepare_image_for_model, image_bytes)
 
         async with tasks_lock:
             filename = tasks[task_id].filename if task_id in tasks else None
 
-        prompt = build_reasoning_prompt(features, filename)
+        prompt = build_reasoning_prompt(filename)
         await update_task(
             task_id,
-            step="OpenAI推論準備中",
-            progress=50,
-            notes="推論を開始します。抽出した特徴をもとに分析します。",
+            step="Grok推論準備中",
+            progress=45,
+            notes="推論を開始します。画像の視覚情報と文字情報を読み取っています。",
         )
 
         result = await run_reasoning_loop(task_id, prompt, image_b64)
