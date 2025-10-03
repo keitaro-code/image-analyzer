@@ -6,6 +6,10 @@ body {
   color: #333;
 }
 
+.is-hidden {
+  display: none !important;
+}
+
 #app {
   max-width: 640px;
   margin: 0 auto;

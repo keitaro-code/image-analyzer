@@ -324,6 +324,10 @@ form.addEventListener('submit', async (event) => {
   statusEl.textContent = '画像を送信しています...';
   currentTaskId = null;
 
+  progressSection.hidden = false;
+  progressBar.value = 5;
+  stepText.textContent = '画像を送信中';
+
   const formData = new FormData();
   formData.append('image', imageInput.files[0]);
 
