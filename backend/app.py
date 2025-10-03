@@ -551,7 +551,7 @@ async def run_reasoning_loop(
             await append_note(task_id, f"[試行{attempt}] {phases[idx]}です。")
             await update_task(
                 task_id,
-                step=f"{phases[idx]} ({attempt}/{OPENAI_MAX_CALLS})",
+                step=phases[idx],
                 status="processing",
             )
             try:
