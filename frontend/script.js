@@ -13,6 +13,7 @@ const notesPre = notesContainer.querySelector('pre');
 const clarificationSection = document.getElementById('clarification');
 const questionText = clarificationSection?.querySelector('.question-text');
 const questionContext = clarificationSection?.querySelector('.question-context');
+const answerPreview = clarificationSection?.querySelector('.answer-preview');
 const answerForm = document.getElementById('answer-form');
 const answerInput = document.getElementById('answer-input');
 const answerButton = document.getElementById('answer-submit');
@@ -38,10 +39,17 @@ const resetUI = () => {
     clarificationSection.style.display = 'none';
     if (questionText) questionText.textContent = '';
     if (questionContext) questionContext.textContent = '';
+    if (answerPreview) {
+      answerPreview.textContent = '';
+      answerPreview.style.display = 'none';
+    }
     if (answerInput) answerInput.value = '';
     if (answerInput) answerInput.readOnly = false;
     if (answerButton) answerButton.disabled = false;
     delete clarificationSection.dataset.state;
+    delete clarificationSection.dataset.question;
+    delete clarificationSection.dataset.context;
+    delete clarificationSection.dataset.answer;
   }
   resultSection.classList.add('is-hidden');
   candidateEl.textContent = '';
@@ -117,6 +125,12 @@ const updateStatusUI = (payload) => {
         answerInput.value = '';
       }
     }
+    if (answerPreview) {
+      answerPreview.textContent = '';
+      answerPreview.style.display = 'none';
+    }
+    clarificationSection.dataset.question = question ?? '';
+    clarificationSection.dataset.context = context ?? '';
     clarificationSection.dataset.state = 'awaiting';
     uploadButton.disabled = true;
     statusEl.textContent = '追加情報を入力してください。';
@@ -130,6 +144,16 @@ const updateStatusUI = (payload) => {
       if (answerInput) answerInput.readOnly = true;
       if (answerButton) answerButton.disabled = true;
       uploadButton.disabled = true;
+      if (questionText) questionText.textContent = '';
+      if (questionContext) {
+        questionContext.textContent = '';
+        questionContext.style.display = 'none';
+      }
+      if (answerPreview) {
+        const storedAnswer = clarificationSection.dataset.answer || answerInput?.value || '';
+        answerPreview.textContent = storedAnswer;
+        answerPreview.style.display = 'block';
+      }
     } else {
       clarificationSection.hidden = true;
       clarificationSection.style.display = 'none';
@@ -143,7 +167,14 @@ const updateStatusUI = (payload) => {
         answerInput.readOnly = false;
       }
       if (answerButton) answerButton.disabled = false;
+      if (answerPreview) {
+        answerPreview.textContent = '';
+        answerPreview.style.display = 'none';
+      }
       delete clarificationSection.dataset.state;
+      delete clarificationSection.dataset.question;
+      delete clarificationSection.dataset.context;
+      delete clarificationSection.dataset.answer;
     }
   }
 
@@ -257,6 +288,16 @@ if (answerForm) {
     }
     if (clarificationSection) {
       clarificationSection.dataset.state = 'submitted';
+      clarificationSection.dataset.answer = answer;
+    }
+    if (questionText) questionText.textContent = '';
+    if (questionContext) {
+      questionContext.textContent = '';
+      questionContext.style.display = 'none';
+    }
+    if (answerPreview) {
+      answerPreview.textContent = answer;
+      answerPreview.style.display = 'block';
     }
     statusEl.textContent = '回答を送信しています...';
 
@@ -289,6 +330,19 @@ if (answerForm) {
       }
       if (clarificationSection) {
         clarificationSection.dataset.state = 'awaiting';
+        if (questionText) {
+          questionText.textContent = clarificationSection.dataset.question || '追加の情報を教えてください。';
+        }
+        if (questionContext) {
+          const savedContext = clarificationSection.dataset.context || '';
+          questionContext.textContent = savedContext;
+          questionContext.style.display = savedContext ? 'block' : 'none';
+        }
+        if (answerPreview) {
+          answerPreview.textContent = '';
+          answerPreview.style.display = 'none';
+        }
+        delete clarificationSection.dataset.answer;
       }
     }
   });

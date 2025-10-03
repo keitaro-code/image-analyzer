@@ -146,6 +146,17 @@ progress {
   line-height: 1.5;
 }
 
+.clarification .answer-preview {
+  display: none;
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: #fff4d1;
+  border: 1px solid rgba(218, 158, 60, 0.5);
+  color: #5c3b00;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
 .clarification textarea {
   width: 100%;
   border-radius: 8px;
