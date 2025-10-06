@@ -510,8 +510,8 @@ async def run_reasoning_loop(
         "1. 観察メモ: 建物の構造、景観、気候、地形、道路標識、看板や文字など、人間が現地で目にする要素を箇条書きで整理。確かな観察と推測的な観察を分けてください。\n"
         "2. 候補比較: 2〜3件の候補地を挙げ、各候補と観察メモの照合結果（合致点・不一致点）を比較。\n"
         "3. 最終結論: 最も妥当な候補を選び、決め手となった手掛かりと確信度をまとめる。\n"
-        "重要な手掛かりが欠けている場合のみ clarification を選び、どんな追加情報が必要か日本語で質問を明確に示してください。\n"
-        "confidence は 0〜1 の範囲で、根拠が弱い場合は 0.4〜0.6 程度、看板やランドマークなど決定的な証拠が揃ったときのみ 0.75 以上としてください。\n"
+        "決定的な手掛かりが欠けている場合だけでなく、観察や検索結果から得られる確証が十分でないと感じたときも clarification を選び、どんな追加情報が必要か日本語で質問を明確に示してください。\n"
+        "confidence は 0〜1 の範囲で、根拠が弱い場合は 0.4〜0.6 程度、看板やランドマークなど決定的な証拠が揃ったときのみ 0.75 以上としてください。confidence を 0.65 未満と判断するなら結果ではなく clarification を返してください。\n"
         "最終的な出力は JSON で {status, location, confidence, reason, question, context} を返してください。"
         "status は result もしくは clarification のどちらかです。clarification の場合は question と context を含め、location と confidence は null にしてください。"
         "JSON はコードブロック（```）で囲まず、余計なテキストも付けないでください。"
@@ -582,7 +582,10 @@ async def run_reasoning_loop(
                         "content": [
                             {
                                 "type": "text",
-                                "text": "日本語で指定したJSON形式 (location, confidence, reason) をコードブロックなしで出力してください。",
+                                "text": (
+                                    "日本語で指定したJSON形式 (status, location, confidence, reason, question, context) をコードブロックなしで出力してください。"
+                                    "confidence が 0.65 未満になりそうな場合は result ではなく clarification を返してください。"
+                                ),
                             }
                         ],
                     }
@@ -623,8 +626,8 @@ async def run_reasoning_loop(
                         {
                             "type": "text",
                             "text": (
-                                "前回の内容を踏まえ、日本語で {location, confidence, reason} のJSONをコードブロックなしで返してください。"
-                                "confidenceは0から1の範囲です。"
+                                "前回の内容を踏まえ、日本語で {status, location, confidence, reason, question, context} のJSONをコードブロックなしで返してください。"
+                                "confidence は 0 から 1 の範囲で、0.65 未満になると判断した場合は clarification を選んでください。"
                             ),
                         }
                     ],
