@@ -45,7 +45,7 @@ logging.basicConfig(level=logging.INFO)
 load_dotenv()
 
 OPENAI_MAX_CALLS = 6
-MODEL_NAME = "qwen/qwen2.5-vl-72b-instruct:free"
+MODEL_NAME = "qwen/qwen2.5-vl-32b-instruct:free"
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_HEADERS = {
