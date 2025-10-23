@@ -329,6 +329,13 @@ def strip_code_fence(text: str) -> str:
     return stripped
 
 
+def truncate_for_note(text: str, limit: int = 600) -> str:
+    cleaned = text.strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3] + "..."
+
+
 def parse_reasoning_output(content: str) -> Optional[Dict[str, Any]]:
     candidate_text = strip_code_fence(content)
     if "{" in candidate_text and "}" in candidate_text:
@@ -462,6 +469,8 @@ async def run_planning_phase(
         },
     ]
 
+    last_invalid_response: Optional[str] = None
+
     for attempt in range(1, 4):
         try:
             response = await client.chat.completions.create(
@@ -482,6 +491,15 @@ async def run_planning_phase(
         if parsed:
             return parsed
 
+        snippet = truncate_for_note(content_text)
+        if snippet:
+            await append_note(
+                task_id,
+                "[観察メモ抽出エラー] モデル応答から有効なJSONを解析できませんでした。\n"
+                f"{snippet}",
+            )
+            last_invalid_response = snippet
+
         messages.append({"role": "assistant", "content": [{"type": "text", "text": content_text}]})
         messages.append(
             {
@@ -499,7 +517,10 @@ async def run_planning_phase(
             }
         )
 
-    raise RuntimeError("観察メモと検索クエリの抽出に失敗しました")
+    error_message = "観察メモと検索クエリの抽出に失敗しました"
+    if last_invalid_response:
+        error_message += "（詳細は推論ログを参照してください）"
+    raise RuntimeError(error_message)
 
 
 async def run_reasoning_loop(
