@@ -438,13 +438,16 @@ async def run_planning_phase(
     system_text = (
         "あなたは現地調査を行う旅行ガイドAIです。画像から観察できる確実な点と推測的な点を整理したうえで、"
         "場所特定に役立つウェブ検索クエリを提案してください。"
-        "必ず JSON 形式で {observations: {certain: [], possible: []}, search_queries: [{query, reason}...]} を返してください。"
-        "JSON はコードブロック（```）で囲まず、余計なテキストも付けないでください。"
+        "必ず JSON 形式で {\"observations\":{\"certain\":[],\"possible\":[]},\"search_queries\":[{\"query\":\"...\",\"reason\":\"...\"}]} を返してください。"
+        "キー名・配列構造・ダブルクオートを厳守し、null やコメント、説明文を入れないでください。"
+        "JSON はコードブロックや前後のテキストで囲まず、単一のオブジェクトのみを出力してください。"
     )
     user_text = (
         "画像を詳細に観察し、人間のフィールドノートのように観察メモをまとめてください。"
-        "そのうえで、場所特定のために実行すべきウェブ検索クエリを最大3件提案してください。"
-        "検索が不要と思われる場合は空配列で構いません。"
+        "観察メモは observations.certain と observations.possible に日本語の文字列配列で格納してください。"
+        "場所特定のために実行すべきウェブ検索クエリを最大3件 search_queries 配列に {query, reason} 形式で記述してください。"
+        "検索が不要と思われる場合は空配列を返してください。"
+        "必ず有効な JSON オブジェクトのみを返し、他の文章や説明は出力しないでください。"
     )
 
     messages = [
@@ -486,7 +489,11 @@ async def run_planning_phase(
                 "content": [
                     {
                         "type": "text",
-                        "text": "指定した JSON 形式 {observations: {certain: [], possible: []}, search_queries: [{query, reason}]} のみを返してください。",
+                        "text": (
+                            "出力は {\"observations\":{\"certain\":[],\"possible\":[]},\"search_queries\":[{\"query\":\"...\",\"reason\":\"...\"}]} "
+                            "の JSON オブジェクトのみです。ダブルクオートを含む厳密な JSON を生成し、先頭は { で始めて } で終えてください。"
+                            "空であっても配列は [] を使用し、説明文やマークダウン、余計な文章を絶対に付けないでください。"
+                        ),
                     }
                 ],
             }
