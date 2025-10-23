@@ -493,6 +493,7 @@ async def run_planning_phase(
 
         snippet = truncate_for_note(content_text)
         if snippet:
+            logger.warning("Planning attempt %s returned non-JSON response: %s", attempt, snippet)
             await append_note(
                 task_id,
                 "[観察メモ抽出エラー] モデル応答から有効なJSONを解析できませんでした。\n"

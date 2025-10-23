@@ -32,6 +32,10 @@ let pollingTimer = null;
 const defaultFileLabel = '画像を選択';
 let currentTaskId = null;
 let currentPreviewUrl = null;
+let lastLoggedNotes = '';
+let lastLoggedError = '';
+let lastLoggedStep = '';
+let repeatedStepCount = 0;
 
 const showImagePreview = (file) => {
   if (!file || !imagePreviewSection || !imagePreviewImg || !imagePreviewCaption) {
@@ -55,6 +59,10 @@ const resetUI = (options = {}) => {
   stepText.textContent = '';
   notesContainer.hidden = true;
   notesPre.textContent = '';
+  lastLoggedNotes = '';
+  lastLoggedError = '';
+  lastLoggedStep = '';
+  repeatedStepCount = 0;
   if (!preservePreview && imagePreviewSection) {
     imagePreviewSection.classList.add('is-hidden');
     if (imagePreviewImg) imagePreviewImg.src = '';
@@ -129,6 +137,7 @@ const stopPolling = () => {
 
 const updateStatusUI = (payload) => {
   const {
+    task_id: taskId,
     step,
     progress,
     candidate,
@@ -150,6 +159,10 @@ const updateStatusUI = (payload) => {
     notesContainer.hidden = false;
     notesPre.textContent = notes.trim();
     notesPre.scrollTop = notesPre.scrollHeight;
+    if (notes !== lastLoggedNotes) {
+      console.info(`[Task ${taskId ?? 'unknown'}] Notes updated:\n${notes}`);
+      lastLoggedNotes = notes;
+    }
   }
 
   if (clarificationSection) {
@@ -254,6 +267,10 @@ const updateStatusUI = (payload) => {
 
   if (error) {
     statusEl.textContent = `エラー: ${error}`;
+    if (error !== lastLoggedError) {
+      console.error(`[Task ${taskId ?? 'unknown'}] Error: ${error}`);
+      lastLoggedError = error;
+    }
   } else {
     if (!awaiting_answer && status !== 'completed') {
       statusEl.textContent = '解析を実行中です...';
@@ -285,6 +302,24 @@ const updateStatusUI = (payload) => {
   if (status === 'completed' || status === 'failed') {
     stopPolling();
     uploadButton.disabled = false;
+  }
+
+  if (status === 'processing') {
+    const currentStep = step || '(ステップ未設定)';
+    if (currentStep === lastLoggedStep) {
+      repeatedStepCount += 1;
+    } else {
+      lastLoggedStep = currentStep;
+      repeatedStepCount = 1;
+    }
+    if (repeatedStepCount % 10 === 0) {
+      console.warn(
+        `[Task ${taskId ?? 'unknown'}] Still processing at step "${currentStep}" after ${repeatedStepCount} updates.`,
+      );
+    }
+  } else {
+    lastLoggedStep = '';
+    repeatedStepCount = 0;
   }
 };
 
