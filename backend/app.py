@@ -45,7 +45,7 @@ logging.basicConfig(level=logging.INFO)
 load_dotenv()
 
 OPENAI_MAX_CALLS = 6
-MODEL_NAME = "qwen/qwen3-vl-8b-thinking"
+MODEL_NAME = "openai/gpt-5"
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_HEADERS = {
