@@ -326,6 +326,91 @@ progress {
   box-sizing: border-box;
 }
 
+.answer-attachments {
+  border: 1px dashed rgba(211, 180, 129, 0.8);
+  border-radius: 8px;
+  background: #fff9ed;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.answer-attachments .attachment-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+  color: #745210;
+  cursor: pointer;
+}
+
+.answer-attachments .attachment-label input {
+  display: none;
+}
+
+.answer-attachments .attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.answer-attachments .attachment-item {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  border: 1px solid rgba(211, 180, 129, 0.6);
+  border-radius: 8px;
+  background: #fff;
+  padding: 0.5rem 0.6rem;
+}
+
+.answer-attachments .attachment-item img {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid rgba(211, 180, 129, 0.5);
+}
+
+.answer-attachments .attachment-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+  color: #5c3b00;
+  flex: 1;
+  min-width: 0;
+}
+
+.answer-attachments .attachment-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.answer-attachments .attachment-size {
+  font-size: 0.75rem;
+  color: #8c6a2b;
+}
+
+.answer-attachments .attachment-remove {
+  border: none;
+  background: #f2d3a1;
+  color: #5c3b00;
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: background-color 0.2s ease;
+}
+
+.answer-attachments .attachment-remove:hover {
+  background: #e3b970;
+}
+
 .clarification form {
   display: flex;
   flex-direction: column;

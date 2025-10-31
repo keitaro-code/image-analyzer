@@ -11,11 +11,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from openai import APIError, AsyncOpenAI
-from pydantic import BaseModel
 
 app = FastAPI(title="Image Analyzer", version="0.1.0")
 
@@ -1137,7 +1136,11 @@ async def process_task(task_id: str) -> None:
         )
 
 
-async def continue_with_answer(task_id: str, answer: str) -> None:
+async def continue_with_answer(
+    task_id: str,
+    answer: str,
+    attachments: Optional[List[Dict[str, Any]]] = None,
+) -> None:
     async with tasks_lock:
         state = tasks.get(task_id)
         if not state:
@@ -1157,25 +1160,62 @@ async def continue_with_answer(task_id: str, answer: str) -> None:
     search_packages = search_packages_from_snapshot(search_snapshot)
     planning.search_queries = []  # not used in final prompt
 
-    followup_note = f"ユーザー回答: {answer.strip()}"
-    await append_note(task_id, followup_note)
+    clean_answer = answer.strip()
+    attachments = attachments or []
+
+    note_parts: List[str] = ["ユーザー回答"]
+    if clean_answer:
+        note_parts.append(f": {clean_answer}")
+    if attachments:
+        attachment_names = ", ".join(att.get("filename") or "画像" for att in attachments)
+        if clean_answer:
+            note_parts.append(f"（画像: {attachment_names}）")
+        else:
+            note_parts.append(f": 画像（{attachment_names}）")
+    await append_note(task_id, "".join(note_parts))
+
+    timeline_items: List[str] = []
+    if attachments:
+        timeline_items.append("添付画像:")
+        for att in attachments:
+            timeline_items.append(f"・{att.get('filename') or '画像'}")
+    timeline_body = clean_answer if clean_answer else ("参考画像を送信しました。" if attachments else None)
     await append_timeline_event(
         task_id,
         event_type="question",
         title="ユーザー回答",
-        body=answer.strip(),
+        items=timeline_items or None,
+        body=timeline_body,
         meta={"source": "user"},
     )
+
+    content_parts: List[Dict[str, Any]] = []
+    if clean_answer:
+        content_parts.append(
+            {"type": "text", "text": f"ユーザーからの追加情報: {clean_answer}"}
+        )
+    elif attachments:
+        content_parts.append(
+            {
+                "type": "text",
+                "text": "ユーザーから参考画像が送信されました。画像から読み取れる追加情報を活用してください。",
+            }
+        )
+    for att in attachments:
+        data_uri = att.get("data_uri")
+        if not data_uri:
+            continue
+        content_parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": data_uri},
+            }
+        )
 
     conversation.append(
         {
             "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": f"ユーザーからの追加情報: {answer.strip()}",
-                }
-            ],
+            "content": content_parts,
         }
     )
 
@@ -1287,15 +1327,55 @@ async def analyze_image(image: UploadFile = File(...)) -> Dict[str, Any]:
     return build_payload(task_id, state)
 
 
-class AnswerRequest(BaseModel):
-    answer: str
-
-
 @app.post("/answer/{task_id}")
-async def submit_answer(task_id: str, payload: AnswerRequest) -> Dict[str, Any]:
-    answer = payload.answer.strip()
-    if not answer:
-        raise HTTPException(status_code=400, detail="回答内容を入力してください")
+async def submit_answer(
+    task_id: str,
+    request: Request,
+    answer: Optional[str] = Form(None),
+    images: Optional[List[UploadFile]] = File(None),
+) -> Dict[str, Any]:
+    raw_answer = (answer or "").strip() if answer is not None else None
+    files = images or []
+    if raw_answer is None and not files:
+        # Try parsing JSON payload for backward compatibility
+        try:
+            data = await request.json()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="回答内容を取得できませんでした") from exc
+        text_answer = (data.get("answer") or "").strip()
+        if not text_answer:
+            raise HTTPException(status_code=400, detail="回答内容を入力してください")
+        await continue_with_answer(task_id, text_answer, [])
+        async with tasks_lock:
+            state = tasks.get(task_id)
+            if not state:
+                raise HTTPException(status_code=404, detail="指定されたタスクが見つかりません")
+            return build_payload(task_id, state)
+
+    text_answer = raw_answer or ""
+    if len(files) > 3:
+        raise HTTPException(status_code=400, detail="画像は最大3枚まで添付できます")
+
+    attachments: List[Dict[str, Any]] = []
+    for idx, file in enumerate(files):
+        if not file:
+            continue
+        if file.content_type and not file.content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="画像ファイルのみ添付できます")
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="空の画像ファイルは添付できません")
+        data_uri = build_image_data_uri(content, file.content_type, file.filename)
+        attachments.append(
+            {
+                "data_uri": data_uri,
+                "filename": file.filename or f"attachment_{idx + 1}",
+                "mime_type": file.content_type,
+            }
+        )
+
+    if not text_answer and not attachments:
+        raise HTTPException(status_code=400, detail="テキストもしくは画像を入力してください")
 
     async with tasks_lock:
         state = tasks.get(task_id)
@@ -1306,7 +1386,7 @@ async def submit_answer(task_id: str, payload: AnswerRequest) -> Dict[str, Any]:
     if not awaiting:
         raise HTTPException(status_code=400, detail="このタスクは追加情報を必要としていません")
 
-    await continue_with_answer(task_id, answer)
+    await continue_with_answer(task_id, text_answer, attachments)
 
     async with tasks_lock:
         state = tasks.get(task_id)

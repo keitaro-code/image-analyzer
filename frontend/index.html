@@ -43,6 +43,13 @@
         <form id="answer-form">
           <label for="answer-input" class="visually-hidden">回答</label>
           <textarea id="answer-input" rows="3" placeholder="追加の情報を入力してください"></textarea>
+          <div class="answer-attachments">
+            <label class="attachment-label">
+              <span>参考画像を添付（最大3枚）</span>
+              <input type="file" id="answer-attachments" accept="image/*" multiple />
+            </label>
+            <div class="attachment-list"></div>
+          </div>
           <button type="submit" id="answer-submit">回答を送信</button>
         </form>
       </section>

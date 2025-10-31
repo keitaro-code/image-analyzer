@@ -21,6 +21,8 @@ const answerPreview = clarificationSection?.querySelector('.answer-preview');
 const answerForm = document.getElementById('answer-form');
 const answerInput = document.getElementById('answer-input');
 const answerButton = document.getElementById('answer-submit');
+const answerAttachmentInput = document.getElementById('answer-attachments');
+const answerAttachmentList = clarificationSection?.querySelector('.attachment-list');
 const resultSection = document.getElementById('result');
 const candidateEl = resultSection.querySelector('.candidate');
 const confidenceFillEl = resultSection.querySelector('.confidence-fill');
@@ -38,6 +40,8 @@ let lastLoggedError = '';
 let lastLoggedStep = '';
 let repeatedStepCount = 0;
 let renderedTimelineIds = new Set();
+let answerAttachmentFiles = [];
+const MAX_ATTACHMENT_COUNT = 3;
 
 const showImagePreview = (file) => {
   if (!file || !imagePreviewSection || !imagePreviewImg || !imagePreviewCaption) {
@@ -53,6 +57,138 @@ const showImagePreview = (file) => {
   imagePreviewSection.classList.remove('is-hidden');
 };
 
+const clearAnswerAttachments = () => {
+  answerAttachmentFiles.forEach((item) => {
+    if (item.url) {
+      URL.revokeObjectURL(item.url);
+    }
+  });
+  answerAttachmentFiles = [];
+  if (answerAttachmentList) {
+    answerAttachmentList.innerHTML = '';
+  }
+  if (answerAttachmentInput) {
+    answerAttachmentInput.value = '';
+    answerAttachmentInput.disabled = false;
+    answerAttachmentInput.style.display = '';
+  }
+  const attachmentLabel = clarificationSection?.querySelector('.attachment-label span');
+  if (attachmentLabel) {
+    attachmentLabel.textContent = '参考画像を添付（最大3枚）';
+  }
+};
+
+const renderAnswerAttachments = ({ readonly = false } = {}) => {
+  if (!answerAttachmentList) {
+    return;
+  }
+  answerAttachmentList.innerHTML = '';
+  answerAttachmentFiles.forEach((item) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'attachment-item';
+
+    const thumbnail = document.createElement('img');
+    thumbnail.src = item.url;
+    thumbnail.alt = `${item.file.name} のプレビュー`;
+    wrapper.appendChild(thumbnail);
+
+    const meta = document.createElement('div');
+    meta.className = 'attachment-meta';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'attachment-name';
+    nameEl.textContent = item.file.name;
+    meta.appendChild(nameEl);
+
+    const sizeEl = document.createElement('span');
+    sizeEl.className = 'attachment-size';
+    const sizeKB = Math.round(item.file.size / 1024);
+    sizeEl.textContent = `${sizeKB} KB`;
+    meta.appendChild(sizeEl);
+
+    wrapper.appendChild(meta);
+
+    if (!readonly) {
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'attachment-remove';
+      removeBtn.textContent = '削除';
+      removeBtn.addEventListener('click', () => {
+        answerAttachmentFiles = answerAttachmentFiles.filter((candidate) => candidate.id !== item.id);
+        if (item.url) {
+          URL.revokeObjectURL(item.url);
+        }
+        renderAnswerAttachments();
+        if (answerAttachmentInput) {
+          answerAttachmentInput.disabled = answerAttachmentFiles.length >= MAX_ATTACHMENT_COUNT;
+          if (!answerAttachmentInput.disabled) {
+            answerAttachmentInput.style.display = '';
+          }
+        }
+      });
+      wrapper.appendChild(removeBtn);
+    }
+
+    answerAttachmentList.appendChild(wrapper);
+  });
+
+  if (answerAttachmentInput) {
+    if (readonly) {
+      answerAttachmentInput.disabled = true;
+      answerAttachmentInput.style.display = 'none';
+    } else {
+      answerAttachmentInput.disabled = answerAttachmentFiles.length >= MAX_ATTACHMENT_COUNT;
+      answerAttachmentInput.style.display = answerAttachmentInput.disabled ? 'none' : '';
+    }
+  }
+
+  const attachmentLabel = clarificationSection?.querySelector('.attachment-label span');
+  if (attachmentLabel) {
+    if (readonly) {
+      attachmentLabel.textContent = answerAttachmentFiles.length
+        ? '添付された画像'
+        : '画像は添付されていません';
+    } else {
+      const remaining = MAX_ATTACHMENT_COUNT - answerAttachmentFiles.length;
+      attachmentLabel.textContent = remaining === MAX_ATTACHMENT_COUNT
+        ? '参考画像を添付（最大3枚）'
+        : `参考画像を添付（残り ${remaining} 枚）`;
+    }
+  }
+};
+
+const addAnswerAttachments = (fileList) => {
+  if (!fileList || fileList.length === 0) {
+    return;
+  }
+  let updated = false;
+  Array.from(fileList).forEach((file) => {
+    if (!(file instanceof File)) {
+      return;
+    }
+    if (!file.type || !file.type.startsWith('image/')) {
+      statusEl.textContent = '画像ファイルのみ添付できます。';
+      return;
+    }
+    if (answerAttachmentFiles.length >= MAX_ATTACHMENT_COUNT) {
+      statusEl.textContent = `画像は最大 ${MAX_ATTACHMENT_COUNT} 枚まで添付できます。`;
+      return;
+    }
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    const url = URL.createObjectURL(file);
+    answerAttachmentFiles.push({ id, file, url });
+    updated = true;
+  });
+
+  if (answerAttachmentInput) {
+    answerAttachmentInput.value = '';
+  }
+
+  if (updated) {
+    renderAnswerAttachments();
+    statusEl.textContent = '';
+  }
+};
 const formatTimelineTimestamp = (isoString) => {
   if (!isoString) {
     return '';
@@ -199,10 +335,12 @@ const resetUI = (options = {}) => {
     if (answerInput) answerInput.value = '';
     if (answerInput) answerInput.readOnly = false;
     if (answerButton) answerButton.disabled = false;
+    clearAnswerAttachments();
     delete clarificationSection.dataset.state;
     delete clarificationSection.dataset.question;
     delete clarificationSection.dataset.context;
     delete clarificationSection.dataset.answer;
+    delete clarificationSection.dataset.attachments;
   }
   resultSection.classList.add('is-hidden');
   candidateEl.textContent = '';
@@ -320,9 +458,25 @@ const updateStatusUI = (payload) => {
         answerButton.disabled = true;
         answerButton.style.display = 'none';
       }
+      renderAnswerAttachments({ readonly: true });
       if (answerPreview) {
-        answerPreview.textContent = answerText;
-        answerPreview.style.display = 'block';
+        const attachmentNames = (() => {
+          try {
+            return JSON.parse(clarificationSection.dataset.attachments || '[]');
+          } catch (error) {
+            return [];
+          }
+        })();
+        if (answerText) {
+          answerPreview.textContent = answerText;
+          answerPreview.style.display = 'block';
+        } else if (attachmentNames.length > 0) {
+          answerPreview.textContent = '添付した画像をご確認ください。';
+          answerPreview.style.display = 'block';
+        } else {
+          answerPreview.textContent = '';
+          answerPreview.style.display = 'none';
+        }
       }
       uploadButton.disabled = true;
     };
@@ -356,6 +510,10 @@ const updateStatusUI = (payload) => {
           answerInput.value = '';
         }
       }
+      if (mustResetInput) {
+        clearAnswerAttachments();
+      }
+      renderAnswerAttachments({ readonly: false });
       if (answerPreview) {
         answerPreview.textContent = '';
         answerPreview.style.display = 'none';
@@ -391,10 +549,12 @@ const updateStatusUI = (payload) => {
         answerButton.disabled = false;
         answerButton.style.display = '';
       }
+      clearAnswerAttachments();
       delete clarificationSection.dataset.state;
       delete clarificationSection.dataset.question;
       delete clarificationSection.dataset.context;
       delete clarificationSection.dataset.answer;
+      delete clarificationSection.dataset.attachments;
     }
   }
 
@@ -530,8 +690,9 @@ if (answerForm) {
     }
 
     const answer = answerInput.value.trim();
-    if (!answer) {
-      statusEl.textContent = '回答内容を入力してください。';
+    const hasAttachments = answerAttachmentFiles.length > 0;
+    if (!answer && !hasAttachments) {
+      statusEl.textContent = 'テキストか画像のいずれかを入力してください。';
       return;
     }
 
@@ -543,9 +704,13 @@ if (answerForm) {
       answerInput.readOnly = true;
       answerInput.style.display = 'none';
     }
+    renderAnswerAttachments({ readonly: true });
     if (clarificationSection) {
       clarificationSection.dataset.state = 'submitted';
       clarificationSection.dataset.answer = answer;
+      clarificationSection.dataset.attachments = JSON.stringify(
+        answerAttachmentFiles.map((item) => item.file.name),
+      );
     }
     if (questionText) questionText.textContent = '提出いただいた情報';
     if (questionContext) {
@@ -553,18 +718,33 @@ if (answerForm) {
       questionContext.style.display = 'none';
     }
     if (answerPreview) {
-      answerPreview.textContent = answer;
-      answerPreview.style.display = 'block';
+      if (answer) {
+        answerPreview.textContent = answer;
+        answerPreview.style.display = 'block';
+      } else if (hasAttachments) {
+        answerPreview.textContent = '画像を添付しました。';
+        answerPreview.style.display = 'block';
+      } else {
+        answerPreview.textContent = '';
+        answerPreview.style.display = 'none';
+      }
     }
     statusEl.textContent = '回答を送信しています...';
 
     try {
+      const formData = new FormData();
+      if (answer) {
+        formData.append('answer', answer);
+      }
+      answerAttachmentFiles.forEach((item) => {
+        if (item.file) {
+          formData.append('images', item.file, item.file.name);
+        }
+      });
+
       const response = await fetch(`${API_BASE_URL}/answer/${currentTaskId}`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ answer }),
+        body: formData,
       });
 
       if (!response.ok) {
@@ -583,6 +763,7 @@ if (answerForm) {
         answerButton.disabled = false;
         answerButton.style.display = '';
       }
+      renderAnswerAttachments({ readonly: false });
       if (answerInput) {
         answerInput.readOnly = false;
         answerInput.style.display = '';
@@ -602,8 +783,16 @@ if (answerForm) {
           answerPreview.style.display = 'none';
         }
         delete clarificationSection.dataset.answer;
+        delete clarificationSection.dataset.attachments;
       }
     }
+  });
+}
+
+if (answerAttachmentInput) {
+  answerAttachmentInput.addEventListener('change', (event) => {
+    const { files } = event.target;
+    addAnswerAttachments(files);
   });
 }
 
