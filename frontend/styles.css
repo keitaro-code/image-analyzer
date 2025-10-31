@@ -84,6 +84,121 @@ button:hover:not(:disabled) {
   padding: 1rem;
 }
 
+#notes {
+  margin-top: 1rem;
+}
+
+#notes h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: #1f3366;
+}
+
+#notes .timeline {
+  margin-top: 0.75rem;
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding-right: 0.25rem;
+}
+
+.timeline-event {
+  background: #fff;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 0.75rem 0.9rem;
+  box-shadow: 0 2px 6px rgba(15, 35, 95, 0.08);
+}
+
+.timeline-event--plan {
+  border-left-color: #2563eb;
+}
+
+.timeline-event--investigation {
+  border-left-color: #0ea5e9;
+}
+
+.timeline-event--analysis {
+  border-left-color: #7c3aed;
+}
+
+.timeline-event--question {
+  border-left-color: #f97316;
+}
+
+.timeline-event--result {
+  border-left-color: #16a34a;
+}
+
+.timeline-event--system {
+  border-left-color: #ef4444;
+}
+
+.timeline-event-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.timeline-event-header h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #1f3366;
+}
+
+.timeline-event-time {
+  font-size: 0.75rem;
+  color: #5c6a99;
+}
+
+.timeline-event-body {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #333f67;
+}
+
+.timeline-event-items {
+  margin: 0;
+  padding-left: 1rem;
+  font-size: 0.88rem;
+  color: #33416b;
+}
+
+.timeline-event-items li {
+  margin-bottom: 0.25rem;
+}
+
+.timeline-event-context {
+  margin: 0.5rem 0 0;
+  font-size: 0.82rem;
+  color: #445177;
+  background: rgba(14, 165, 233, 0.08);
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+}
+
+#notes .notes-fallback {
+  margin-top: 0.75rem;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 0.75rem;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  border-radius: 8px;
+  background: #ffffff;
+  font-family: "Noto Sans JP", sans-serif;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #2c3561;
+}
+
 .image-preview {
   margin-bottom: 1.5rem;
   padding: 1rem;

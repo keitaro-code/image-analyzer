@@ -6,7 +6,8 @@ import mimetypes
 import os
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -59,6 +60,17 @@ BRAVE_MAX_RESULTS = 3
 
 
 @dataclass
+class TimelineEvent:
+    id: str
+    type: str
+    title: str
+    timestamp: str
+    items: List[str] = field(default_factory=list)
+    body: Optional[str] = None
+    meta: Optional[Dict[str, Any]] = None
+
+
+@dataclass
 class TaskState:
     step: str
     progress: float
@@ -66,6 +78,7 @@ class TaskState:
     confidence: Optional[float]
     reason: Optional[str]
     notes: Optional[str] = None
+    timeline: List[TimelineEvent] = field(default_factory=list)
     retries: int = 0
     status: str = "pending"
     error: Optional[str] = None
@@ -107,6 +120,24 @@ tasks_lock = asyncio.Lock()
 _openai_client: Optional[AsyncOpenAI] = None
 
 
+def _current_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def serialize_timeline(events: Optional[List[TimelineEvent]]) -> List[Dict[str, Any]]:
+    if not events:
+        return []
+    serialized: List[Dict[str, Any]] = []
+    for event in events:
+        data = asdict(event)
+        if not data.get("items"):
+            data["items"] = []
+        if data.get("meta") is None:
+            data["meta"] = {}
+        serialized.append(data)
+    return serialized
+
+
 def build_payload(task_id: str, state: TaskState) -> Dict[str, Any]:
     return {
         "task_id": task_id,
@@ -121,6 +152,7 @@ def build_payload(task_id: str, state: TaskState) -> Dict[str, Any]:
         "question": state.question,
         "question_context": state.question_context,
         "awaiting_answer": state.awaiting_answer,
+        "timeline": serialize_timeline(state.timeline),
     }
 
 
@@ -141,6 +173,35 @@ async def append_note(task_id: str, text: str) -> None:
         base = state.notes or ""
         separator = "\n" if base else ""
         state.notes = f"{base}{separator}{text.strip()}" if text else base
+
+
+async def append_timeline_event(
+    task_id: str,
+    *,
+    event_type: str,
+    title: str,
+    items: Optional[List[str]] = None,
+    body: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> None:
+    cleaned_items = [
+        str(item).strip() for item in (items or []) if str(item).strip()
+    ]
+    body_text = body.strip() if body and body.strip() else None
+    event = TimelineEvent(
+        id=str(uuid.uuid4()),
+        type=event_type,
+        title=title,
+        timestamp=_current_timestamp(),
+        items=cleaned_items,
+        body=body_text,
+        meta=meta or None,
+    )
+    async with tasks_lock:
+        state = tasks.get(task_id)
+        if not state:
+            return
+        state.timeline.append(event)
 
 
 async def progress_ticker(
@@ -579,6 +640,13 @@ async def run_reasoning_loop(
 
             idx = min(attempt - 1, len(phases) - 1)
             await append_note(task_id, f"[試行{attempt}] {phases[idx]}です。")
+            await append_timeline_event(
+                task_id,
+                event_type="analysis",
+                title=f"試行{attempt}: {phases[idx]}",
+                items=["推論を開始しました。"],
+                meta={"attempt": attempt, "phase": phases[idx], "status": "started"},
+            )
             await update_task(
                 task_id,
                 step=phases[idx],
@@ -602,6 +670,13 @@ async def run_reasoning_loop(
 
             if not content_text:
                 await append_note(task_id, f"[試行{attempt}] モデルから空の応答が返されました。再試行します。")
+                await append_timeline_event(
+                    task_id,
+                    event_type="analysis",
+                    title=f"試行{attempt}: 応答なし",
+                    body="モデルから空の応答が返されました。再試行します。",
+                    meta={"attempt": attempt, "phase": phases[idx], "status": "empty_response"},
+                )
                 messages.append(
                     {"role": "assistant", "content": [{"type": "text", "text": ""}]}
                 )
@@ -634,6 +709,17 @@ async def run_reasoning_loop(
                         task_id,
                         f"[試行{attempt}] JSON形式の解答を受信しました。候補: {parsed['candidate']}, 確信度: {parsed['confidence']:.2f}",
                     )
+                    await append_timeline_event(
+                        task_id,
+                        event_type="analysis",
+                        title=f"試行{attempt}: 結果を受信",
+                        items=[
+                            f"候補: {parsed['candidate']}",
+                            f"確信度: {parsed['confidence']:.2f}",
+                        ],
+                        body=parsed.get("reason"),
+                        meta={"attempt": attempt, "phase": phases[idx], "status": "result"},
+                    )
                     return parsed, messages
 
                 if parsed["type"] == "question":
@@ -641,10 +727,39 @@ async def run_reasoning_loop(
                         task_id,
                         "[試行{}] 追加情報が必要と判断されました。質問を提示します。".format(attempt),
                     )
+                    followups = parsed.get("followups")
+                    followup_items = (
+                        [str(item).strip() for item in followups if str(item).strip()]
+                        if isinstance(followups, list)
+                        else None
+                    )
+                    await append_timeline_event(
+                        task_id,
+                        event_type="analysis",
+                        title=f"試行{attempt}: 追加情報を要求",
+                        items=followup_items,
+                        body=parsed.get("question"),
+                        meta={
+                            "attempt": attempt,
+                            "phase": phases[idx],
+                            "status": "clarification",
+                            "context": parsed.get("context"),
+                        },
+                    )
                     return parsed, messages
 
             snippet = content_text[:500]
             await append_note(task_id, f"[試行{attempt}] 中間考察:\n{snippet}")
+            snippet_lines = [line.strip() for line in snippet.splitlines() if line.strip()]
+            if len(snippet_lines) > 6:
+                snippet_lines = snippet_lines[:5] + ["..."]
+            await append_timeline_event(
+                task_id,
+                event_type="analysis",
+                title=f"試行{attempt}: 中間考察",
+                items=snippet_lines or [snippet.strip()],
+                meta={"attempt": attempt, "phase": phases[idx], "status": "intermediate"},
+            )
             messages.append(
                 {"role": "assistant", "content": [{"type": "text", "text": content_text}]}
             )
@@ -698,6 +813,19 @@ def summarize_search_hits(hits: List[SearchHit]) -> str:
     return "\n".join(lines)
 
 
+def search_hits_to_items(hits: List[SearchHit], limit: int = 3) -> List[str]:
+    if not hits:
+        return ["検索結果なし"]
+    items: List[str] = []
+    for hit in hits[:limit]:
+        snippet = hit.snippet.strip().replace("\n", " ")
+        if len(snippet) > 120:
+            snippet = snippet[:117] + "..."
+        url_suffix = f" ({hit.url})" if hit.url else ""
+        items.append(f"{hit.title} - {snippet}{url_suffix}")
+    return items
+
+
 def planning_from_snapshot(snapshot: Dict[str, Any]) -> PlanningOutput:
     return PlanningOutput(
         observations_certain=snapshot.get("observations_certain", []) or [],
@@ -745,6 +873,39 @@ async def process_task(task_id: str) -> None:
         )
 
         planning = await run_planning_phase(task_id, image_data_uri, filename)
+
+        plan_items: List[str] = []
+        if planning.observations_certain:
+            plan_items.append("確かな観察:")
+            plan_items.extend(f"・{item}" for item in planning.observations_certain)
+        if planning.observations_possible:
+            plan_items.append("推測的な観察:")
+            plan_items.extend(f"・{item}" for item in planning.observations_possible)
+        if planning.search_queries:
+            plan_items.append("検索タスク:")
+            for entry in planning.search_queries:
+                query_text = entry.get("query") if isinstance(entry, dict) else None
+                rationale_text = entry.get("rationale") if isinstance(entry, dict) else None
+                if query_text:
+                    label = f"・{query_text}"
+                    if rationale_text:
+                        label += f"（目的: {rationale_text}）"
+                    plan_items.append(label)
+        plan_meta: Dict[str, Any] = {
+            "observations": {
+                "certain": planning.observations_certain,
+                "possible": planning.observations_possible,
+            },
+            "search_queries": planning.search_queries,
+        }
+        await append_timeline_event(
+            task_id,
+            event_type="plan",
+            title="分析プラン",
+            items=plan_items,
+            meta=plan_meta,
+        )
+
         obs_note = format_observations_note(planning)
         if obs_note:
             await append_note(task_id, f"[観察メモ]\n{obs_note}")
@@ -758,6 +919,17 @@ async def process_task(task_id: str) -> None:
             if not query_text:
                 continue
             rationale = query_info.get("rationale")
+            start_items = []
+            if rationale:
+                start_items.append(f"目的: {rationale}")
+            start_items.append("検索を実行します。")
+            await append_timeline_event(
+                task_id,
+                event_type="investigation",
+                title=f"検索: \"{query_text}\"",
+                items=start_items,
+                meta={"query": query_text, "status": "started"},
+            )
             await append_note(
                 task_id,
                 f"[検索] \"{query_text}\" を実行します。"
@@ -765,6 +937,13 @@ async def process_task(task_id: str) -> None:
             )
             if brave_error:
                 await append_note(task_id, f"[検索] スキップ: {brave_error}")
+                await append_timeline_event(
+                    task_id,
+                    event_type="investigation",
+                    title=f"検索をスキップ: \"{query_text}\"",
+                    body=f"前の検索でエラーが発生したためスキップしました。理由: {brave_error}",
+                    meta={"query": query_text, "status": "skipped"},
+                )
                 continue
             try:
                 hits = await brave_web_search(query_text)
@@ -772,11 +951,32 @@ async def process_task(task_id: str) -> None:
                 logger.exception("Brave search failed for task %s: %s", task_id, exc)
                 brave_error = str(exc)
                 await append_note(task_id, f"[検索] エラー: {brave_error}")
+                await append_timeline_event(
+                    task_id,
+                    event_type="investigation",
+                    title=f"検索エラー: \"{query_text}\"",
+                    body=brave_error,
+                    meta={"query": query_text, "status": "error"},
+                )
                 continue
 
             await append_note(
                 task_id,
                 f"[検索結果] \"{query_text}\"\n{summarize_search_hits(hits)}",
+            )
+            await append_timeline_event(
+                task_id,
+                event_type="investigation",
+                title=f"検索結果: \"{query_text}\"",
+                items=search_hits_to_items(hits),
+                meta={
+                    "query": query_text,
+                    "status": "completed",
+                    "results": [
+                        {"title": hit.title, "url": hit.url}
+                        for hit in hits[:BRAVE_MAX_RESULTS]
+                    ],
+                },
             )
             search_packages.append(
                 SearchPackage(query=query_text, rationale=rationale, results=hits)
@@ -837,6 +1037,20 @@ async def process_task(task_id: str) -> None:
                 task_id,
                 "追加情報が必要です。画面の質問に回答してください。",
             )
+            await append_timeline_event(
+                task_id,
+                event_type="question",
+                title="追加情報をお願いします",
+                items=(
+                    [str(item).strip() for item in result_data.get("followups", []) if str(item).strip()]
+                    if isinstance(result_data.get("followups"), list)
+                    else None
+                ),
+                body=result_data.get("question"),
+                meta={
+                    "context": result_data.get("context"),
+                },
+            )
             return
 
         await append_note(
@@ -861,9 +1075,30 @@ async def process_task(task_id: str) -> None:
             search_packages_snapshot=search_snapshot,
             image_data_uri=image_data_uri,
         )
+        await append_timeline_event(
+            task_id,
+            event_type="result",
+            title="推論結果",
+            items=[
+                f"候補: {result_data['candidate']}",
+                f"確信度: {result_data['confidence']:.2f}",
+            ],
+            body=result_data["reason"],
+            meta={
+                "candidate": result_data["candidate"],
+                "confidence": result_data["confidence"],
+            },
+        )
     except RuntimeError as exc:
         logger.error("Task %s failed: %s", task_id, exc)
         await append_note(task_id, f"推論に失敗しました: {exc}")
+        await append_timeline_event(
+            task_id,
+            event_type="system",
+            title="推論に失敗しました",
+            body=str(exc),
+            meta={"status": "failed"},
+        )
         await update_task(
             task_id,
             status="failed",
@@ -874,6 +1109,13 @@ async def process_task(task_id: str) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("Unexpected error while processing task %s", task_id)
         await append_note(task_id, "予期せぬエラーが発生しました。ログを確認してください。")
+        await append_timeline_event(
+            task_id,
+            event_type="system",
+            title="予期せぬエラー",
+            body="予期せぬエラーが発生しました。ログを確認してください。",
+            meta={"status": "failed"},
+        )
         await update_task(
             task_id,
             status="failed",
@@ -906,6 +1148,13 @@ async def continue_with_answer(task_id: str, answer: str) -> None:
 
     followup_note = f"ユーザー回答: {answer.strip()}"
     await append_note(task_id, followup_note)
+    await append_timeline_event(
+        task_id,
+        event_type="question",
+        title="ユーザー回答",
+        body=answer.strip(),
+        meta={"source": "user"},
+    )
 
     conversation.append(
         {
@@ -929,6 +1178,20 @@ async def continue_with_answer(task_id: str, answer: str) -> None:
 
     if result_data["type"] == "question":
         await append_note(task_id, "追加の情報がまだ必要です。続けて回答してください。")
+        await append_timeline_event(
+            task_id,
+            event_type="question",
+            title="追加の情報が必要です",
+            items=(
+                [str(item).strip() for item in result_data.get("followups", []) if str(item).strip()]
+                if isinstance(result_data.get("followups"), list)
+                else None
+            ),
+            body=result_data.get("question"),
+            meta={
+                "context": result_data.get("context"),
+            },
+        )
         await update_task(
             task_id,
             step="追加情報を待機中",
@@ -957,6 +1220,20 @@ async def continue_with_answer(task_id: str, answer: str) -> None:
         conversation=updated_conversation,
         planning_snapshot=planning_snapshot,
         search_packages_snapshot=search_snapshot,
+    )
+    await append_timeline_event(
+        task_id,
+        event_type="result",
+        title="推論結果",
+        items=[
+            f"候補: {result_data['candidate']}",
+            f"確信度: {result_data['confidence']:.2f}",
+        ],
+        body=result_data["reason"],
+        meta={
+            "candidate": result_data["candidate"],
+            "confidence": result_data["confidence"],
+        },
     )
 @app.get("/health")
 async def health() -> Dict[str, str]:

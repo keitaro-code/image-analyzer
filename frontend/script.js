@@ -9,7 +9,8 @@ const progressSection = document.getElementById('progress');
 const progressBar = progressSection.querySelector('progress');
 const stepText = progressSection.querySelector('.step');
 const notesContainer = document.getElementById('notes');
-const notesPre = notesContainer.querySelector('pre');
+const timelineContainer = notesContainer?.querySelector('.timeline');
+const notesFallbackPre = notesContainer?.querySelector('.notes-fallback');
 const imagePreviewSection = document.getElementById('image-preview');
 const imagePreviewImg = imagePreviewSection?.querySelector('img');
 const imagePreviewCaption = imagePreviewSection?.querySelector('.image-filename');
@@ -36,6 +37,7 @@ let lastLoggedNotes = '';
 let lastLoggedError = '';
 let lastLoggedStep = '';
 let repeatedStepCount = 0;
+let renderedTimelineIds = new Set();
 
 const showImagePreview = (file) => {
   if (!file || !imagePreviewSection || !imagePreviewImg || !imagePreviewCaption) {
@@ -51,6 +53,99 @@ const showImagePreview = (file) => {
   imagePreviewSection.classList.remove('is-hidden');
 };
 
+const formatTimelineTimestamp = (isoString) => {
+  if (!isoString) {
+    return '';
+  }
+  const parsed = new Date(isoString);
+  if (Number.isNaN(parsed.getTime())) {
+    return '';
+  }
+  return parsed.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+};
+
+const getTimelineTypeClass = (type) => {
+  if (!type) {
+    return 'timeline-event--default';
+  }
+  return `timeline-event--${type}`;
+};
+
+const appendTimelineEvents = (events = [], taskId) => {
+  if (!timelineContainer) {
+    return;
+  }
+  let appended = false;
+  events.forEach((event) => {
+    if (!event || !event.id || renderedTimelineIds.has(event.id)) {
+      return;
+    }
+    const container = document.createElement('article');
+    container.className = `timeline-event ${getTimelineTypeClass(event.type)}`;
+
+    const header = document.createElement('div');
+    header.className = 'timeline-event-header';
+
+    const titleEl = document.createElement('h4');
+    titleEl.textContent = event.title || '進捗更新';
+    header.appendChild(titleEl);
+
+    const timeLabel = formatTimelineTimestamp(event.timestamp);
+    if (timeLabel) {
+      const timeEl = document.createElement('time');
+      timeEl.className = 'timeline-event-time';
+      timeEl.dateTime = event.timestamp;
+      timeEl.textContent = timeLabel;
+      header.appendChild(timeEl);
+    }
+
+    container.appendChild(header);
+
+    if (event.body) {
+      const bodyEl = document.createElement('p');
+      bodyEl.className = 'timeline-event-body';
+      bodyEl.textContent = event.body;
+      container.appendChild(bodyEl);
+    }
+
+    if (Array.isArray(event.items) && event.items.length > 0) {
+      const listEl = document.createElement('ul');
+      listEl.className = 'timeline-event-items';
+      event.items.forEach((item) => {
+        if (!item) {
+          return;
+        }
+        const li = document.createElement('li');
+        li.textContent = item;
+        listEl.appendChild(li);
+      });
+      if (listEl.childElementCount > 0) {
+        container.appendChild(listEl);
+      }
+    }
+
+    const context = event.meta?.context;
+    if (context && typeof context === 'string' && context.trim()) {
+      const contextEl = document.createElement('p');
+      contextEl.className = 'timeline-event-context';
+      contextEl.textContent = context.trim();
+      container.appendChild(contextEl);
+    }
+
+    timelineContainer.appendChild(container);
+    if (taskId) {
+      console.info(`[Task ${taskId}] Timeline update: ${event.title || event.type || event.id}`);
+    }
+    renderedTimelineIds.add(event.id);
+    appended = true;
+  });
+
+  if (appended) {
+    timelineContainer.classList.remove('is-hidden');
+    timelineContainer.scrollTop = timelineContainer.scrollHeight;
+  }
+};
+
 const resetUI = (options = {}) => {
   const { preservePreview = false, preserveFilename = false } = options;
   statusEl.textContent = '';
@@ -58,7 +153,15 @@ const resetUI = (options = {}) => {
   progressBar.value = 0;
   stepText.textContent = '';
   notesContainer.hidden = true;
-  notesPre.textContent = '';
+  if (timelineContainer) {
+    timelineContainer.innerHTML = '';
+    timelineContainer.classList.remove('is-hidden');
+  }
+  if (notesFallbackPre) {
+    notesFallbackPre.textContent = '';
+    notesFallbackPre.classList.remove('is-hidden');
+  }
+  renderedTimelineIds = new Set();
   lastLoggedNotes = '';
   lastLoggedError = '';
   lastLoggedStep = '';
@@ -155,14 +258,32 @@ const updateStatusUI = (payload) => {
   progressBar.value = progress ?? 0;
   stepText.textContent = step ?? '進行中';
 
-  if (notes) {
+  const timelineEvents = Array.isArray(payload.timeline) ? payload.timeline : [];
+  if (timelineEvents.length > 0) {
     notesContainer.hidden = false;
-    notesPre.textContent = notes.trim();
-    notesPre.scrollTop = notesPre.scrollHeight;
+    appendTimelineEvents(timelineEvents, taskId);
+    if (notesFallbackPre) {
+      notesFallbackPre.classList.add('is-hidden');
+    }
+    if (typeof notes === 'string') {
+      lastLoggedNotes = notes;
+    }
+  } else if (notes) {
+    notesContainer.hidden = false;
+    if (timelineContainer) {
+      timelineContainer.classList.add('is-hidden');
+    }
+    if (notesFallbackPre) {
+      notesFallbackPre.classList.remove('is-hidden');
+      notesFallbackPre.textContent = notes.trim();
+      notesFallbackPre.scrollTop = notesFallbackPre.scrollHeight;
+    }
     if (notes !== lastLoggedNotes) {
       console.info(`[Task ${taskId ?? 'unknown'}] Notes updated:\n${notes}`);
       lastLoggedNotes = notes;
     }
+  } else if (timelineContainer && timelineContainer.childElementCount === 0) {
+    notesContainer.hidden = true;
   }
 
   if (clarificationSection) {
