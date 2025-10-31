@@ -1389,7 +1389,41 @@ async def continue_with_answer(
     )
 
     clarification_resolved = False
+    force_due_to_no_info = no_info_answer
     while result_data["type"] == "question":
+        if force_due_to_no_info:
+            await append_note(
+                task_id,
+                "追加情報が提供できないため、現在の情報で推論を完了します。",
+            )
+            updated_conversation.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "これ以上提供できる情報はありません。clarification は出さず、"
+                                "現時点で得た観察と検索情報のみで最適だと思う候補を result として返してください。"
+                                "confidence が低くても構いません。"
+                            ),
+                        }
+                    ],
+                }
+            )
+            result_data, updated_conversation = await run_reasoning_loop(
+                task_id,
+                prompt,
+                image_data_uri,
+                messages=updated_conversation,
+                force_result=True,
+            )
+            force_due_to_no_info = False
+            if result_data["type"] != "question":
+                clarification_resolved = True
+                break
+            # まだ question の場合は通常のフローへ
+
         count = await increment_clarification_count(task_id)
         if count > MAX_CLARIFICATION_ATTEMPTS:
             await append_note(task_id, "追加情報が得られないため、現在の情報で推論を完了します。")
