@@ -494,12 +494,7 @@ const updateStatusUI = (payload) => {
       clarificationSection.style.display = 'flex';
       const newQuestion = question ?? '追加の情報を教えてください。';
       const sameQuestionAsBefore = previousQuestion === newQuestion;
-
-      if (hasSubmitted && sameQuestionAsBefore && storedAnswer) {
-        // 送信済みだがモデルからまだ応答が返っていない。プレビューのまま維持。
-        showSubmittedPreview(storedAnswer);
-        return;
-      }
+      const wasSubmitted = hasSubmitted;
 
       const mustResetInput = !sameQuestionAsBefore;
       if (questionText) questionText.textContent = newQuestion;
@@ -514,11 +509,11 @@ const updateStatusUI = (payload) => {
       if (answerInput) {
         answerInput.readOnly = false;
         answerInput.style.display = '';
-        if (mustResetInput) {
+        if (mustResetInput || wasSubmitted) {
           answerInput.value = '';
         }
       }
-      if (mustResetInput) {
+      if (mustResetInput || wasSubmitted) {
         clearAnswerAttachments();
       }
       renderAnswerAttachments({ readonly: false });
@@ -528,9 +523,8 @@ const updateStatusUI = (payload) => {
       }
       clarificationSection.dataset.question = newQuestion;
       clarificationSection.dataset.context = context ?? '';
-      if (!sameQuestionAsBefore) {
-        delete clarificationSection.dataset.answer;
-      }
+      delete clarificationSection.dataset.answer;
+      delete clarificationSection.dataset.attachments;
       clarificationSection.dataset.state = 'awaiting';
       uploadButton.disabled = true;
       statusEl.textContent = '追加情報を入力してください。';

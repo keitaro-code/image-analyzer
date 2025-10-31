@@ -57,6 +57,7 @@ BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_TIMEOUT = 12.0
 BRAVE_MAX_RESULTS = 3
 BRAVE_MAX_RETRIES = 3
+MAX_CLARIFICATION_ATTEMPTS = 2
 
 
 @dataclass
@@ -92,6 +93,7 @@ class TaskState:
     planning_snapshot: Optional[Dict[str, Any]] = None
     search_packages_snapshot: Optional[List[Dict[str, Any]]] = None
     image_data_uri: Optional[str] = None
+    clarification_count: int = 0
 
 
 @dataclass
@@ -322,6 +324,22 @@ def parse_retry_after(headers: Dict[str, str], attempt: int) -> float:
             if delay > 0:
                 return delay
     return max(5.0, 6.0 * attempt)
+
+
+async def increment_clarification_count(task_id: str) -> int:
+    async with tasks_lock:
+        state = tasks.get(task_id)
+        if not state:
+            return 0
+        state.clarification_count += 1
+        return state.clarification_count
+
+
+async def reset_clarification_count(task_id: str) -> None:
+    async with tasks_lock:
+        state = tasks.get(task_id)
+        if state:
+            state.clarification_count = 0
 
 
 async def brave_web_search(query: str, *, count: int = BRAVE_MAX_RESULTS) -> List[SearchHit]:
@@ -1083,12 +1101,6 @@ async def process_task(task_id: str) -> None:
             status="processing",
         )
 
-        result_data, conversation_messages = await run_reasoning_loop(
-            task_id,
-            prompt,
-            image_data_uri,
-        )
-
         snapshot = {
             "observations_certain": planning.observations_certain,
             "observations_possible": planning.observations_possible,
@@ -1105,7 +1117,54 @@ async def process_task(task_id: str) -> None:
             for pkg in search_packages
         ]
 
-        if result_data["type"] == "question":
+        result_data, conversation_messages = await run_reasoning_loop(
+            task_id,
+            prompt,
+            image_data_uri,
+        )
+
+        clarification_resolved = False
+        while result_data["type"] == "question":
+            count = await increment_clarification_count(task_id)
+            if count > MAX_CLARIFICATION_ATTEMPTS:
+                await append_note(
+                    task_id,
+                    "追加情報が得られないため、現在の情報で推論を完了します。",
+                )
+                conversation_messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "追加の情報はありません。これまでに提供した観察と検索結果のみで最適な推論を行い、"
+                                    "clarification ではなく status=result の JSON を返してください。confidence は低くても構いません。"
+                                ),
+                            }
+                        ],
+                    }
+                )
+                result_data, conversation_messages = await run_reasoning_loop(
+                    task_id,
+                    prompt,
+                    image_data_uri,
+                    messages=conversation_messages,
+                )
+                if result_data["type"] == "question":
+                    await append_note(
+                        task_id,
+                        "モデルが結果を返せなかったため、追加情報不足として終了します。",
+                    )
+                    result_data = {
+                        "type": "result",
+                        "candidate": "追加情報不足のため特定困難",
+                        "confidence": 0.0,
+                        "reason": "追加情報が得られず、モデルが結論を提示できませんでした。",
+                    }
+                clarification_resolved = True
+                break
+
             await update_task(
                 task_id,
                 step="追加情報を待機中",
@@ -1138,6 +1197,11 @@ async def process_task(task_id: str) -> None:
                 },
             )
             return
+
+        if clarification_resolved:
+            await reset_clarification_count(task_id)
+        elif result_data["type"] == "result":
+            await reset_clarification_count(task_id)
 
         await append_note(
             task_id,
@@ -1303,7 +1367,45 @@ async def continue_with_answer(
         messages=conversation,
     )
 
-    if result_data["type"] == "question":
+    clarification_resolved = False
+    while result_data["type"] == "question":
+        count = await increment_clarification_count(task_id)
+        if count > MAX_CLARIFICATION_ATTEMPTS:
+            await append_note(task_id, "追加情報が得られないため、現在の情報で推論を完了します。")
+            updated_conversation.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "これ以上提供できる情報はありません。clarification は使わず、"
+                                "status=result の JSON を返してください。confidence は低くても構いません。"
+                            ),
+                        }
+                    ],
+                }
+            )
+            result_data, updated_conversation = await run_reasoning_loop(
+                task_id,
+                prompt,
+                image_data_uri,
+                messages=updated_conversation,
+            )
+            if result_data["type"] == "question":
+                await append_note(
+                    task_id,
+                    "モデルが結果を返せなかったため、追加情報不足として終了します。",
+                )
+                result_data = {
+                    "type": "result",
+                    "candidate": "追加情報不足のため特定困難",
+                    "confidence": 0.0,
+                    "reason": "追加情報が得られず、モデルが結論を提示できませんでした。",
+                }
+            clarification_resolved = True
+            break
+
         await append_note(task_id, "追加の情報がまだ必要です。続けて回答してください。")
         await append_timeline_event(
             task_id,
@@ -1329,6 +1431,9 @@ async def continue_with_answer(
             conversation=updated_conversation,
         )
         return
+
+    if clarification_resolved or result_data["type"] == "result":
+        await reset_clarification_count(task_id)
 
     await append_note(task_id, "推論が完了しました。最終結果をUIに反映します。")
 
