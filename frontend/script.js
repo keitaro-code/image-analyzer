@@ -146,6 +146,18 @@ const appendTimelineEvents = (events = [], taskId) => {
   }
 };
 
+const formatReasonText = (text) => {
+  if (!text) {
+    return '---';
+  }
+  let formatted = text;
+  formatted = formatted.replace(/\s*-\s*/g, '\n- ');
+  formatted = formatted.replace(/(\d+\.)\s*/g, '\n$1 ');
+  formatted = formatted.replace(/\n{2,}/g, '\n');
+  formatted = formatted.replace(/^\n+/, '');
+  return formatted.trim();
+};
+
 const resetUI = (options = {}) => {
   const { preservePreview = false, preserveFilename = false } = options;
   statusEl.textContent = '';
@@ -417,7 +429,7 @@ const updateStatusUI = (payload) => {
     if (confidenceLabelEl) {
       confidenceLabelEl.textContent = conf.label;
     }
-    reasonEl.textContent = reason ?? '---';
+    reasonEl.textContent = formatReasonText(reason);
   }
 
   if (status === 'completed' || status === 'failed') {

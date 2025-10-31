@@ -396,6 +396,7 @@ progress {
 .reason-card .reason {
   margin: 0;
   line-height: 1.7;
+  white-space: pre-wrap;
 }
 
 .result-label {
