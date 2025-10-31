@@ -56,6 +56,7 @@ BRAVE_KEY_ENV = "BRAVE_API_KEY"
 BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_TIMEOUT = 12.0
 BRAVE_MAX_RESULTS = 3
+BRAVE_MAX_RETRIES = 3
 
 
 @dataclass
@@ -117,6 +118,12 @@ class PlanningOutput:
 tasks: Dict[str, TaskState] = {}
 tasks_lock = asyncio.Lock()
 _openai_client: Optional[AsyncOpenAI] = None
+
+
+class BraveRateLimitError(RuntimeError):
+    def __init__(self, retry_after: float, message: str) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 def _current_timestamp() -> str:
@@ -296,6 +303,27 @@ def build_image_data_uri(image_bytes: bytes, mime_type: Optional[str], filename:
     return f"data:{media_type};base64,{encoded}"
 
 
+def parse_retry_after(headers: Dict[str, str], attempt: int) -> float:
+    retry_after = headers.get("Retry-After")
+    if retry_after:
+        try:
+            return max(1.0, float(retry_after))
+        except ValueError:
+            with suppress(ValueError):
+                parsed = datetime.fromisoformat(retry_after)
+                delay = (parsed - datetime.now(timezone.utc)).total_seconds()
+                if delay > 0:
+                    return delay
+    reset_header = headers.get("X-RateLimit-Reset")
+    if reset_header:
+        with suppress(ValueError):
+            reset_epoch = float(reset_header)
+            delay = reset_epoch - datetime.now(timezone.utc).timestamp()
+            if delay > 0:
+                return delay
+    return max(5.0, 6.0 * attempt)
+
+
 async def brave_web_search(query: str, *, count: int = BRAVE_MAX_RESULTS) -> List[SearchHit]:
     api_key = os.getenv(BRAVE_KEY_ENV)
     if not api_key:
@@ -309,12 +337,40 @@ async def brave_web_search(query: str, *, count: int = BRAVE_MAX_RESULTS) -> Lis
     params = {"q": query, "count": count}
 
     async with httpx.AsyncClient(timeout=BRAVE_TIMEOUT) as client:
-        response = await client.get(
-            BRAVE_SEARCH_ENDPOINT,
-            headers=headers,
-            params=params,
-        )
-        response.raise_for_status()
+        last_exception: Optional[Exception] = None
+        for attempt in range(1, BRAVE_MAX_RETRIES + 1):
+            try:
+                response = await client.get(
+                    BRAVE_SEARCH_ENDPOINT,
+                    headers=headers,
+                    params=params,
+                )
+                response.raise_for_status()
+                break
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    wait_seconds = parse_retry_after(exc.response.headers, attempt)
+                    last_exception = BraveRateLimitError(
+                        wait_seconds,
+                        "Brave Search API のレート上限に達しました。",
+                    )
+                    if attempt == BRAVE_MAX_RETRIES:
+                        raise last_exception
+                    await asyncio.sleep(wait_seconds)
+                    continue
+                last_exception = exc
+                if attempt == BRAVE_MAX_RETRIES:
+                    raise
+                await asyncio.sleep(1.5 * attempt)
+            except httpx.RequestError as exc:
+                last_exception = exc
+                if attempt == BRAVE_MAX_RETRIES:
+                    raise
+                await asyncio.sleep(1.5 * attempt)
+        else:
+            if last_exception:
+                raise last_exception
+            raise RuntimeError("Brave検索が不明な理由で失敗しました")
 
     data = response.json()
     web_results = data.get("web", {}).get("results", [])
@@ -957,6 +1013,26 @@ async def process_task(task_id: str) -> None:
                 continue
             try:
                 hits = await brave_web_search(query_text)
+            except BraveRateLimitError as exc:
+                human_message = (
+                    "検索回数の上限に到達しました。しばらく待ってから自動的に再開します。"
+                )
+                logger.warning(
+                    "Brave search rate limit for task %s (query=%s). Retry after %.1fs",
+                    task_id,
+                    query_text,
+                    exc.retry_after,
+                )
+                brave_error = human_message
+                await append_note(task_id, f"[検索] レート制限: {human_message}")
+                await append_timeline_event(
+                    task_id,
+                    event_type="investigation",
+                    title=f"検索レート制限: \"{query_text}\"",
+                    body=f"{human_message}（Retry-After: 約 {exc.retry_after:.1f} 秒）",
+                    meta={"query": query_text, "status": "rate_limited"},
+                )
+                continue
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Brave search failed for task %s: %s", task_id, exc)
                 brave_error = str(exc)

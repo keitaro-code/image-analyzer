@@ -212,6 +212,7 @@ const appendTimelineEvents = (events = [], taskId) => {
     return;
   }
   let appended = false;
+  let rateLimitedDetected = false;
   events.forEach((event) => {
     if (!event || !event.id || renderedTimelineIds.has(event.id)) {
       return;
@@ -274,11 +275,18 @@ const appendTimelineEvents = (events = [], taskId) => {
     }
     renderedTimelineIds.add(event.id);
     appended = true;
+    if (event.meta?.status === 'rate_limited') {
+      rateLimitedDetected = true;
+    }
   });
 
   if (appended) {
     timelineContainer.classList.remove('is-hidden');
     timelineContainer.scrollTop = timelineContainer.scrollHeight;
+  }
+
+  if (rateLimitedDetected) {
+    statusEl.textContent = '検索回数が上限に達したため結果が空の可能性があります。少し時間をおいて再試行してください。';
   }
 };
 
