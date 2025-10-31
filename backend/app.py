@@ -342,6 +342,17 @@ async def reset_clarification_count(task_id: str) -> None:
             state.clarification_count = 0
 
 
+def is_no_information_answer(text: str, attachments: Optional[List[Dict[str, Any]]]) -> bool:
+    if attachments:
+        return False
+    normalized = text.strip()
+    if not normalized:
+        return True
+    normalized_lower = normalized.lower()
+    keywords = ["わからない", "わかりません", "不明", "情報なし", "情報がない", "ないです", "none", "no information"]
+    return any(keyword in normalized_lower for keyword in keywords)
+
+
 async def brave_web_search(query: str, *, count: int = BRAVE_MAX_RESULTS) -> List[SearchHit]:
     api_key = os.getenv(BRAVE_KEY_ENV)
     if not api_key:
@@ -663,6 +674,7 @@ async def run_reasoning_loop(
     prompt: str,
     image_data_uri: str,
     messages: Optional[List[Dict[str, Any]]] = None,
+    force_result: bool = False,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     client = ensure_openai_client()
     stop_event = asyncio.Event()
@@ -673,16 +685,19 @@ async def run_reasoning_loop(
         "1. 観察メモ: 建物の構造、景観、気候、地形、道路標識、看板や文字など、人間が現地で目にする要素を箇条書きで整理。確かな観察と推測的な観察を分けてください。\n"
         "2. 候補比較: 2〜3件の候補地を挙げ、各候補と観察メモの照合結果（合致点・不一致点）を比較。\n"
         "3. 最終結論: 最も妥当な候補を選び、決め手となった手掛かりと確信度をまとめる。\n"
-        "追加情報が本当に必要な場合のみ clarification を選び、どんな追加情報が必要か日本語で明確に示してください。"
-        "ユーザーから「情報がない」「わからない」などの回答が届いた場合は、それ以上 clarification を求めず、"
-        "現時点で把握できている根拠に基づいて最良の仮説を result として返してください。\n"
-        "confidence は 0〜1 の範囲で、根拠が弱い場合は 0.2〜0.5 程度でもかまいません。"
-        "決定的な手掛かりが揃わない場合でも、確信度が低いことを明示しながら result を返してください。\n"
+        "決定的な手掛かりが欠けている場合だけでなく、観察や検索結果から得られる確証が十分でないと感じたときも clarification を選び、どんな追加情報が必要か日本語で質問を明確に示してください。\n"
+        "confidence は 0〜1 の範囲で、根拠が弱い場合は 0.4〜0.6 程度、看板やランドマークなど決定的な証拠が揃ったときのみ 0.75 以上としてください。confidence を 0.65 未満と判断するなら結果ではなく clarification を返してください。\n"
         "最終的な出力は JSON で {status, location, confidence, reason, question, context} を返してください。"
         "status は result もしくは clarification のどちらかです。clarification の場合は question と context を含め、location と confidence は null にしてください。"
         "JSON はコードブロック（```）で囲まず、余計なテキストも付けないでください。"
         "location と reason は日本語で、confidence は 0 から 1 の数値にしてください。"
     )
+
+    if force_result:
+        system_text += (
+            "\nユーザーから追加情報が得られないため、clarification を再度求めず、"
+            "confidence が 0.2〜0.5 程度と低くても構わないので現時点の根拠を整理して result を返してください。"
+        )
 
     if messages is None:
         messages = [
@@ -1153,6 +1168,7 @@ async def process_task(task_id: str) -> None:
                     prompt,
                     image_data_uri,
                     messages=conversation_messages,
+                    force_result=True,
                 )
                 if result_data["type"] == "question":
                     await append_note(
@@ -1363,11 +1379,13 @@ async def continue_with_answer(
     )
 
     prompt = build_reasoning_prompt(filename, planning, search_packages)
+    no_info_answer = is_no_information_answer(clean_answer, attachments)
     result_data, updated_conversation = await run_reasoning_loop(
         task_id,
         prompt,
         image_data_uri,
         messages=conversation,
+        force_result=no_info_answer,
     )
 
     clarification_resolved = False
@@ -1394,6 +1412,7 @@ async def continue_with_answer(
                 prompt,
                 image_data_uri,
                 messages=updated_conversation,
+                force_result=True,
             )
             if result_data["type"] == "question":
                 await append_note(
