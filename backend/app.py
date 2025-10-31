@@ -872,6 +872,17 @@ async def process_task(task_id: str) -> None:
             question_context=None,
         )
 
+        await append_timeline_event(
+            task_id,
+            event_type="plan",
+            title="分析プランを準備中",
+            items=[
+                "AIが画像の観察メモをまとめています",
+                "調査に使うキーワードの候補を考えています",
+            ],
+            body="解析に少し時間がかかる場合があります（最大30秒ほど）。",
+        )
+
         planning = await run_planning_phase(task_id, image_data_uri, filename)
 
         plan_items: List[str] = []
