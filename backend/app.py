@@ -45,7 +45,7 @@ logging.basicConfig(level=logging.INFO)
 load_dotenv()
 
 OPENAI_MAX_CALLS = 6
-MODEL_NAME = "openai/gpt-5"
+MODEL_NAME = "google/gemini-3-pro-preview"
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_HEADERS = {
